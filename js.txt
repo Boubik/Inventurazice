@@ -1,0 +1,53 @@
+(function() {
+    let data = [];
+
+    // Locate the input field for "mistnost" and get its value
+    const roomInput = document.querySelector('input[name="mistnost"]');
+    if (!roomInput) {
+        console.error('Input field for "mistnost" not found.');
+        return; // Exit the script
+    }
+
+    const roomValue = roomInput.value.trim();
+    if (roomValue) {
+        data.push([roomValue, `Místnost: ${roomValue};`]);
+    }
+
+    // Select the table with class "zaznamy"
+    const table = document.querySelector('table.zaznamy');
+    if (!table) {
+        console.error('Table with class "zaznamy" not found.');
+        return; // Exit the script
+    }
+
+    // Find all rows within the table body
+    table.querySelectorAll('tr').forEach(row => {
+        const cells = row.querySelectorAll('td');
+        if (cells.length > 4) {
+            // Adjust indexes based on your table structure
+            const evidencniCislo = cells[3]?.textContent.trim() || ""; // Column with "Evidenční číslo"
+            const osoba = cells[2]?.textContent.trim() || "";          // Column with "Odpovědná osoba"
+            const nazev = cells[4]?.textContent.trim() || "";          // Column with "Název"
+            if (evidencniCislo && osoba && nazev) {
+                data.push([evidencniCislo, osoba, nazev]);
+            }
+        }
+    });
+
+    console.log("Data found:", data);
+
+    // Generate and download CSV with semicolon as separator
+    if (data.length > 0) {
+        const csvContent = "data:text/csv;charset=utf-8," + data.map(e => e.join(";")).join("\n");
+        const encodedUri = encodeURI(csvContent);
+        const fileName = `evidencni_cisla_${roomValue}.csv`.replace(/[^a-zA-Z0-9._-]/g, "_"); // Sanitize filename
+        const link = document.createElement("a");
+        link.setAttribute("href", encodedUri);
+        link.setAttribute("download", fileName);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    } else {
+        console.log("No data entries found.");
+    }
+})();
