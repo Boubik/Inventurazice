@@ -5,6 +5,7 @@ from tkinter import messagebox
 from tkinter import ttk
 from PIL import Image, ImageTk
 import os
+import unicodedata
 
 # Function to load data from CSV
 def load_data(csv_file):
@@ -38,8 +39,8 @@ class InventoryApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Inventory QR Code Viewer")
-        self.root.geometry("800x600")
-        self.root.minsize(600, 400)
+        self.root.geometry("800x700")
+        self.root.minsize(600, 600)
 
         # Set dark theme
         style = ttk.Style()
@@ -49,10 +50,8 @@ class InventoryApp:
         style.configure("TButton", background="#3e3e3e", foreground="#ffffff", font=("Arial", 10, "bold"), padding=5)
         style.map("TButton", background=[("active", "#4f4f4f")])
 
-        # Folder Path
-        self.folder_path = "inv"
-        if not os.path.exists(self.folder_path):
-            os.makedirs(self.folder_path)
+        # Current folder path
+        self.current_path = os.getcwd()  # Start in the root directory
 
         # Initialize views
         self.file_selection_view()
@@ -89,23 +88,36 @@ class InventoryApp:
         button_frame.pack(fill=tk.BOTH, expand=True, pady=10)
         button_frame.columnconfigure(0, weight=1)
 
-        ttk.Button(button_frame, text="Refresh", command=self.refresh_file_list).grid(row=0, column=0, padx=10, pady=5, sticky="ew")
-        ttk.Button(button_frame, text="Open", command=self.open_file).grid(row=1, column=0, padx=10, pady=5, sticky="ew")
+        ttk.Button(button_frame, text="Go Back", command=self.go_back).grid(row=0, column=0, padx=10, pady=5, sticky="ew")
+        ttk.Button(button_frame, text="Refresh", command=self.refresh_file_list).grid(row=1, column=0, padx=10, pady=5, sticky="ew")
+        ttk.Button(button_frame, text="Open", command=self.open_file).grid(row=2, column=0, padx=10, pady=5, sticky="ew")
+        # Bind Enter key to open the selected file or folder
+        self.file_listbox.bind("<Return>", lambda event: self.open_file())
 
-        # Bind double-click and enter for file selection
-        self.file_listbox.bind("<Double-1>", lambda event: self.open_file())
-        self.root.bind("<Return>", lambda event: self.open_selected_file())
+        # Bind Escape key
+        self.root.bind("<Escape>", lambda event: self.go_back() if hasattr(self, "program_root") and self.current_path != self.program_root else None)
 
     def refresh_file_list(self):
         self.file_listbox.delete(0, tk.END)
-        self.csv_files = [f for f in os.listdir(self.folder_path) if f.endswith('.csv')]
-        if not self.csv_files:
-            messagebox.showwarning("No Files", "No CSV files found in the folder.")
-        else:
-            for file in self.csv_files:
-                self.file_listbox.insert(tk.END, file)
-            # Auto-select the first file
-            self.file_listbox.selection_set(0)
+        try:
+            entries = os.listdir(self.current_path)
+            # Separate folders and files, then sort each group
+            folders = sorted([entry for entry in entries if os.path.isdir(os.path.join(self.current_path, entry)) and entry != "venv" and not entry.startswith('.')])
+            files = sorted([entry for entry in entries if entry.endswith('.csv') and not entry.startswith('.')])
+
+            # Combine sorted folders and files
+            self.entries = folders + files
+
+            if not self.entries:
+                messagebox.showwarning("No Files", "No folders or CSV files found in the current directory.")
+            else:
+                for entry in self.entries:
+                    self.file_listbox.insert(tk.END, entry)
+                # Auto-select the first entry and set focus
+                self.file_listbox.selection_set(0)
+                self.file_listbox.focus_set()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load entries:\n{str(e)}") 
 
     def open_selected_file(self):
         selected_index = self.file_listbox.curselection()
@@ -115,22 +127,30 @@ class InventoryApp:
     def open_file(self):
         selected_index = self.file_listbox.curselection()
         if not selected_index:
-            messagebox.showwarning("No Selection", "Please select a file.")
+            messagebox.showwarning("No Selection", "Please select a file or folder.")
             return
 
-        selected_file = self.csv_files[selected_index[0]]
-        file_path = os.path.join(self.folder_path, selected_file)
+        selected_entry = self.entries[selected_index[0]]
+        selected_path = os.path.join(self.current_path, selected_entry)
 
-        room_name, evidence_entries = load_data(file_path)
-        if evidence_entries:
-            self.qr_code_viewer(room_name, evidence_entries)
+        if os.path.isdir(selected_path):
+            # Navigate into the folder
+            self.current_path = selected_path
+            self.refresh_file_list()
+        elif selected_path.endswith('.csv'):
+            # Load and display the CSV file
+            room_name, evidence_entries = load_data(selected_path)
+            if evidence_entries:
+                self.qr_code_viewer(room_name, evidence_entries)
+        else:
+            messagebox.showerror("Invalid Selection", "Please select a valid folder or CSV file.")
 
     def qr_code_viewer(self, room_name, evidence_entries):
         self.clear_view()
         self.room_name = room_name
         self.evidence_entries = evidence_entries
         self.index = 0
-
+    
         # Main frame
         main_frame = ttk.Frame(self.root, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
@@ -172,10 +192,13 @@ class InventoryApp:
 
     def show_qr_code(self):
         inventarizacni_cislo, owner, name = self.evidence_entries[self.index]
+
+        # Update labels with normalized data
         self.label_code.config(text=f"{inventarizacni_cislo}")
         self.label_owner.config(text=f"{owner}")
         self.label_name.config(text=f"{name}")
 
+        # Generate QR code with normalized data
         qr_image = generate_qr_image(inventarizacni_cislo).resize((300, 300))
         self.qr_image_tk = ImageTk.PhotoImage(qr_image)
         self.qr_label.config(image=self.qr_image_tk)
@@ -192,9 +215,17 @@ class InventoryApp:
         if self.index > 0:
             self.index -= 1
             self.show_qr_code()
+    
+    def go_back(self):
+        if hasattr(self, "program_root") and self.current_path != self.program_root:
+            self.current_path = os.path.dirname(self.current_path)
+            self.refresh_file_list()
+        else:
+            messagebox.showinfo("Root Directory", "You are already at the root directory.")
 
 # Run the application
 if __name__ == "__main__":
     root = tk.Tk()
     app = InventoryApp(root)
+    app.program_root = os.getcwd()  # Set the root directory here
     root.mainloop()
