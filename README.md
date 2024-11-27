@@ -1,18 +1,24 @@
-# Inventory QR Code Viewer
+# Inventory Management Tool
 
-A Python-based desktop application for generating and viewing QR codes for inventory items. This tool processes a CSV file containing inventory data, generates QR codes for each item (including room information), and displays them in a user-friendly interface—ideal for inventory tracking and management.
+This project is designed to help manage and organize inventory data stored in CSV files. The tool parses, organizes, and outputs inventory data into structured directories and CSV files for easier navigation and usage.
 
 ## Features
 
-- **CSV File Support**: Handles inventory data with room names and item details.
-- **Automatic QR Code Generation**: Creates QR codes for each item and corresponding rooms.
-- **Detailed Item Display**:
-  - Inventory Number (`Inventarizační číslo`)
-  - Responsible Person (`Odpovědná osoba`)
-  - Item Name (`Název`)
-- **User-Friendly Navigation**:
-  - Displays current position and total count (e.g., `64/3.41 - 1/73`)
-  - Dark-themed, responsive interface
+- **CSV File Parsing**: Read and process semicolon-delimited CSV files.
+- **Location-Based File Organization**: Automatically categorize data into folders and files based on locations provided in the CSV.
+- **Statistics Generation**: Provides a breakdown of the items by location and a **total count** of all items.
+- **Easy Output**: Saves organized files in an `out` directory for quick access.
+
+## How It Works
+
+The main script, `parser.py`, is responsible for processing and saving the data. Here's how it works:
+
+1. **Input File**: The script reads data from a CSV file (default: `MANKO.csv`).
+2. **Data Organization**: It separates inventory items based on their `location` field, dividing them into:
+   - **Main locations** (e.g., buildings or floors).
+   - **Sub-locations** (e.g., rooms or sections).
+3. **File Saving**: Creates directories and saves data into appropriately named CSV files.
+4. **Statistics Reporting**: Prints detailed statistics of the data processed, including the total count of items across all locations.
 
 ## Prerequisites
 
