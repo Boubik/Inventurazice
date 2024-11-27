@@ -6,6 +6,7 @@ def process_csv_and_save(file_path):
     # Dictionary to store lists for each main location key
     location_data = defaultdict(lambda: defaultdict(list))
     output_dir = "out"
+    total_items = 0  # Initialize a counter for the total number of items
 
     try:
         with open(file_path, mode="r", encoding="utf-8") as csvfile:
@@ -30,6 +31,7 @@ def process_csv_and_save(file_path):
                             nazev = row[1].strip()  # Index 1
                             # Store data in nested structure
                             location_data[main_key][sub_key].append((inventarni_cislo, nazev))
+                            total_items += 1  # Increment the total items counter
 
         # Create output directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
@@ -60,7 +62,9 @@ def process_csv_and_save(file_path):
             for sub_key, items in sub_dict.items():
                 print(f"\t{sub_key}: {len(items)} items")
 
-        print(f"\nAll data successfully saved to the '{output_dir}' directory.")
+        # Print total statistics
+        print(f"\nTotal items across all locations: {total_items}")
+        print(f"All data successfully saved to the '{output_dir}' directory.")
 
     except FileNotFoundError:
         print(f"Error: File '{file_path}' not found.")
