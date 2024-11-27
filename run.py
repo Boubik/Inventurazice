@@ -7,6 +7,8 @@ from PIL import Image, ImageTk
 import os
 import unicodedata
 
+removeCZChars = True
+
 # Function to load data from CSV
 def load_data(csv_file):
     evidence_entries = []
@@ -33,6 +35,13 @@ def load_data(csv_file):
 def generate_qr_image(content):
     qr = qrcode.make(content)
     return qr
+
+def remove_accents(input_str):
+    """
+    Remove accents from a string.
+    """
+    nfkd_form = unicodedata.normalize('NFKD', input_str)
+    return ''.join([char for char in nfkd_form if not unicodedata.combining(char)])
 
 # Main application class
 class InventoryApp:
@@ -193,13 +202,16 @@ class InventoryApp:
     def show_qr_code(self):
         inventarizacni_cislo, owner, name = self.evidence_entries[self.index]
 
+        # Remove accents from Inventarizační číslo
+        normalized_code = remove_accents(inventarizacni_cislo)
+    
         # Update labels with normalized data
-        self.label_code.config(text=f"{inventarizacni_cislo}")
+        self.label_code.config(text=f"{normalized_code}")
         self.label_owner.config(text=f"{owner}")
         self.label_name.config(text=f"{name}")
 
         # Generate QR code with normalized data
-        qr_image = generate_qr_image(inventarizacni_cislo).resize((300, 300))
+        qr_image = generate_qr_image(normalized_code).resize((300, 300))
         self.qr_image_tk = ImageTk.PhotoImage(qr_image)
         self.qr_label.config(image=self.qr_image_tk)
 
