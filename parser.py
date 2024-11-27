@@ -50,7 +50,7 @@ def process_csv_and_save(file_path):
 
                     # Write all the data
                     for inventarni_cislo, nazev in items:
-                        writer.writerow([f"{inventarni_cislo}", "", "", f"{nazev}"])
+                        writer.writerow([f"{inventarni_cislo}", "", f"{nazev}"])
 
         # Print statistics
         print("\nStatistics:")
