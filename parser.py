@@ -125,7 +125,7 @@ def process_and_save_by_owner(file_path, output_dir="out/names"):
                         writer = csv.writer(csvfile, delimiter=";", quoting=csv.QUOTE_NONE, escapechar='\\')
                         writer.writerow([f"{main_key}/{'/'.join(sub_keys)}", f"Místnost: {main_key}/{'/'.join(sub_keys)}", ""])
                         for inventarni_cislo, nazev in items:
-                            writer.writerow([f"{inventarni_cislo}", "", f"{nazev}"])
+                            writer.writerow([f"{inventarni_cislo}", owner, f"{nazev}"])
 
         print("\nStatistics by owner:")
         for owner, locations in owner_data.items():
