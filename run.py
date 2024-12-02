@@ -61,6 +61,7 @@ class InventoryApp:
 
         # Current folder path
         self.current_path = os.getcwd()  # Start in the root directory
+        self.program_root = self.current_path  # Set program root directory
 
         # Initialize views
         self.file_selection_view()
@@ -77,7 +78,8 @@ class InventoryApp:
         main_frame.pack(fill=tk.BOTH, expand=True)
 
         # Current path label
-        self.current_path_label = ttk.Label(main_frame, text=f"Current Path: {self.current_path}", font=("Arial", 12, "italic"))
+        relative_path = os.path.relpath(self.current_path, self.program_root)
+        self.current_path_label = ttk.Label(main_frame, text=f"Current Path: {relative_path}", font=("Arial", 12, "italic"))
         self.current_path_label.pack(pady=5, anchor="w")
 
         # Title label
@@ -209,8 +211,9 @@ class InventoryApp:
                 self.file_listbox.selection_set(0)
                 self.file_listbox.focus_set()
 
-            # Update current path label
-            self.current_path_label.config(text=f"Current Path: {self.current_path}")
+            # Update current path label with relative path
+            relative_path = os.path.relpath(self.current_path, self.program_root)
+            self.current_path_label.config(text=f"Current Path: {relative_path}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load entries:\n{str(e)}")
 
@@ -330,8 +333,6 @@ class InventoryApp:
             self.current_path = os.path.dirname(self.current_path)
             self.search_var.set("")  # Reset search field on navigation
             self.refresh_file_list()
-        else:
-            messagebox.showinfo("Root Directory", "You are already at the root directory.")
 
 # Run the application
 if __name__ == "__main__":
