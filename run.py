@@ -297,11 +297,14 @@ class InventoryApp:
         self.show_qr_code()
 
     def show_qr_code(self):
+        """
+        Display the current QR code, owner, and name.
+        """
         inventarizacni_cislo, owner, name = self.evidence_entries[self.index]
 
         # Remove accents from Inventarizační číslo
         normalized_code = remove_accents(inventarizacni_cislo)
-    
+        
         # Update labels with normalized data
         self.label_code.config(text=f"{normalized_code}")
         self.label_owner.config(text=f"{owner}")
@@ -312,8 +315,10 @@ class InventoryApp:
         self.qr_image_tk = ImageTk.PhotoImage(qr_image)
         self.qr_label.config(image=self.qr_image_tk)
 
-        # Update position label with room name and counter
-        self.position_label.config(text=f"{self.room_name} - {self.index + 1}/{len(self.evidence_entries)}")
+        # Update position label with room name and counter (starting from 0)
+        self.position_label.config(
+            text=f"{self.room_name} - {self.index}/{len(self.evidence_entries) - 1}"
+        )
 
     def show_next(self):
         if self.index < len(self.evidence_entries) - 1:
