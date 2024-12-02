@@ -76,6 +76,10 @@ class InventoryApp:
         main_frame = ttk.Frame(self.root, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
 
+        # Current path label
+        self.current_path_label = ttk.Label(main_frame, text=f"Current Path: {self.current_path}", font=("Arial", 12, "italic"))
+        self.current_path_label.pack(pady=5, anchor="w")
+
         # Title label
         ttk.Label(main_frame, text="Select a CSV File", font=("Arial", 16)).pack(pady=10, anchor="w")
 
@@ -204,6 +208,9 @@ class InventoryApp:
                 # Auto-select the first entry and set focus
                 self.file_listbox.selection_set(0)
                 self.file_listbox.focus_set()
+
+            # Update current path label
+            self.current_path_label.config(text=f"Current Path: {self.current_path}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load entries:\n{str(e)}")
 
