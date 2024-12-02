@@ -79,6 +79,18 @@ class InventoryApp:
         # Title label
         ttk.Label(main_frame, text="Select a CSV File", font=("Arial", 16)).pack(pady=10, anchor="w")
 
+        # Search bar frame
+        search_frame = ttk.Frame(main_frame)
+        search_frame.pack(fill=tk.X, pady=5)
+        ttk.Label(search_frame, text="Search: ").pack(side=tk.LEFT, padx=5)
+
+        self.search_var = tk.StringVar()  # Variable to store search input
+        search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
+        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        search_entry.bind("<KeyRelease>", lambda event: self.perform_search())  # Trigger search on key release
+
+        ttk.Button(search_frame, text="Search", command=self.perform_search).pack(side=tk.LEFT, padx=5)
+
         # Listbox with scrollbar
         listbox_frame = ttk.Frame(main_frame)
         listbox_frame.pack(fill=tk.BOTH, expand=True, pady=10)
@@ -92,6 +104,15 @@ class InventoryApp:
         # Populate listbox
         self.refresh_file_list()
 
+        # Bind Enter key to open the selected file or folder
+        self.file_listbox.bind("<Return>", lambda event: self.open_file())
+
+        # Bind Double-Click to open the selected file or folder
+        self.file_listbox.bind("<Double-1>", lambda event: self.open_selected_file())
+
+        # Bind Escape key
+        self.root.bind("<Escape>", lambda event: self.go_back() if hasattr(self, "program_root") and self.current_path != self.program_root else None)
+
         # Buttons (Centered)
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(fill=tk.BOTH, expand=True, pady=10)
@@ -100,13 +121,27 @@ class InventoryApp:
         ttk.Button(button_frame, text="Go Back", command=self.go_back).grid(row=0, column=0, padx=10, pady=5, sticky="ew")
         ttk.Button(button_frame, text="Refresh", command=self.refresh_file_list).grid(row=1, column=0, padx=10, pady=5, sticky="ew")
         ttk.Button(button_frame, text="Open", command=self.open_file).grid(row=2, column=0, padx=10, pady=5, sticky="ew")
-        # Bind Enter key to open the selected file or folder
-        self.file_listbox.bind("<Return>", lambda event: self.open_file())
 
-        # Bind Escape key
-        self.root.bind("<Escape>", lambda event: self.go_back() if hasattr(self, "program_root") and self.current_path != self.program_root else None)
+    def perform_search(self):
+        """
+        Filter the entries in the Listbox based on the search query.
+        """
+        query = self.search_var.get().lower()  # Get search input and make it case-insensitive
+        filtered_entries = [entry for entry in self.entries if query in entry.lower()]  # Filter entries
+
+        # Update the Listbox with filtered entries
+        self.file_listbox.delete(0, tk.END)
+        if not filtered_entries:
+            self.file_listbox.insert(tk.END, "No matching entries found.")
+        else:
+            for entry in filtered_entries:
+                self.file_listbox.insert(tk.END, entry)
 
     def refresh_file_list(self):
+        """
+        Refresh the file list and reset search.
+        """
+        self.search_var.set("")  # Reset search field
         self.file_listbox.delete(0, tk.END)
         try:
             entries = os.listdir(self.current_path)
@@ -126,7 +161,7 @@ class InventoryApp:
                 self.file_listbox.selection_set(0)
                 self.file_listbox.focus_set()
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to load entries:\n{str(e)}") 
+            messagebox.showerror("Error", f"Failed to load entries:\n{str(e)}")
 
     def open_selected_file(self):
         selected_index = self.file_listbox.curselection()
@@ -134,6 +169,9 @@ class InventoryApp:
             self.open_file()
 
     def open_file(self):
+        """
+        Open a selected file or folder and reset search.
+        """
         selected_index = self.file_listbox.curselection()
         if not selected_index:
             messagebox.showwarning("No Selection", "Please select a file or folder.")
@@ -141,6 +179,8 @@ class InventoryApp:
 
         selected_entry = self.entries[selected_index[0]]
         selected_path = os.path.join(self.current_path, selected_entry)
+
+        self.search_var.set("")  # Reset search field on navigation
 
         if os.path.isdir(selected_path):
             # Navigate into the folder
@@ -229,8 +269,12 @@ class InventoryApp:
             self.show_qr_code()
     
     def go_back(self):
+        """
+        Go back to the parent directory and reset search.
+        """
         if hasattr(self, "program_root") and self.current_path != self.program_root:
             self.current_path = os.path.dirname(self.current_path)
+            self.search_var.set("")  # Reset search field on navigation
             self.refresh_file_list()
         else:
             messagebox.showinfo("Root Directory", "You are already at the root directory.")
