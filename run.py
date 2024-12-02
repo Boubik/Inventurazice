@@ -59,9 +59,10 @@ class InventoryApp:
         style.configure("TButton", background="#3e3e3e", foreground="#ffffff", font=("Arial", 10, "bold"), padding=5)
         style.map("TButton", background=[("active", "#4f4f4f")])
 
-        # Current folder path
-        self.current_path = os.getcwd()  # Start in the root directory
-        self.program_root = self.current_path  # Set program root directory
+        # Folder Path
+        self.folder_path = "inv"
+        if not os.path.exists(self.folder_path):
+            os.makedirs(self.folder_path)
 
         # Initialize views
         self.file_selection_view()
@@ -124,68 +125,12 @@ class InventoryApp:
         button_frame.pack(fill=tk.BOTH, expand=True, pady=10)
         button_frame.columnconfigure(0, weight=1)
 
-        ttk.Button(button_frame, text="Go Back", command=self.go_back).grid(row=0, column=0, padx=10, pady=5, sticky="ew")
-        ttk.Button(button_frame, text="Refresh", command=self.refresh_file_list).grid(row=1, column=0, padx=10, pady=5, sticky="ew")
-        ttk.Button(button_frame, text="Open", command=self.open_file).grid(row=2, column=0, padx=10, pady=5, sticky="ew")
+        ttk.Button(button_frame, text="Refresh", command=self.refresh_file_list).grid(row=0, column=0, padx=10, pady=5, sticky="ew")
+        ttk.Button(button_frame, text="Open", command=self.open_file).grid(row=1, column=0, padx=10, pady=5, sticky="ew")
 
-        # Set initial focus to Listbox
-        self.file_listbox.focus_set()
-
-    def listbox_keypress(self, event):
-        """
-        Handle keypress in the Listbox. If alphanumeric key, update the search bar and perform search.
-        """
-        if event.char.isprintable():  # Check if the key is printable (e.g., letter or number)
-            # Enable search entry temporarily to update its value
-            self.search_entry.configure(state="normal")
-            self.search_var.set(self.search_var.get() + event.char)  # Append the key to search bar
-            self.search_entry.configure(state="disabled")  # Disable it back for focus consistency
-            self.perform_search()  # Perform search based on updated search query
-
-
-    def delete_from_search(self, event):
-        """
-        Handle Backspace in the Listbox to delete characters from the search bar.
-        """
-        if self.search_var.get():  # Ensure there's something to delete
-            # Enable search entry temporarily to update its value
-            self.search_entry.configure(state="normal")
-            self.search_var.set(self.search_var.get()[:-1])  # Remove the last character
-            self.search_entry.configure(state="disabled")  # Disable it back for focus consistency
-            self.perform_search()  # Perform search based on updated search query
-
-
-    def navigate_listbox(self, direction):
-        """
-        Navigate the Listbox using the arrow keys, moving by one item at a time.
-        """
-        selected = self.file_listbox.curselection()
-        if selected:
-            new_index = max(0, min(selected[0] + direction, self.file_listbox.size() - 1))
-        else:
-            new_index = 0  # If no item is selected, default to the first item
-
-        self.file_listbox.selection_clear(0, tk.END)
-        self.file_listbox.selection_set(new_index)
-        self.file_listbox.activate(new_index)
-        self.file_listbox.see(new_index)  # Ensure the item is visible
-
-        return "break"  # Prevent default Listbox behavior
-
-    def perform_search(self):
-        """
-        Filter the entries in the Listbox based on the search query.
-        """
-        query = self.search_var.get().lower()  # Get search input and make it case-insensitive
-        filtered_entries = [entry for entry in self.entries if query in entry.lower()]  # Filter entries
-
-        # Update the Listbox with filtered entries
-        self.file_listbox.delete(0, tk.END)
-        if not filtered_entries:
-            self.file_listbox.insert(tk.END, "No matching entries found.")
-        else:
-            for entry in filtered_entries:
-                self.file_listbox.insert(tk.END, entry)
+        # Bind double-click and enter for file selection
+        self.file_listbox.bind("<Double-1>", lambda event: self.open_file())
+        self.root.bind("<Return>", lambda event: self.open_selected_file())
 
     def refresh_file_list(self):
         """
@@ -193,29 +138,14 @@ class InventoryApp:
         """
         self.search_var.set("")  # Reset search field
         self.file_listbox.delete(0, tk.END)
-        try:
-            entries = os.listdir(self.current_path)
-            # Separate folders and files, then sort each group
-            folders = sorted([entry for entry in entries if os.path.isdir(os.path.join(self.current_path, entry)) and entry != "venv" and not entry.startswith('.')])
-            files = sorted([entry for entry in entries if entry.endswith('.csv') and not entry.startswith('.')])
-
-            # Combine sorted folders and files
-            self.entries = folders + files
-
-            if not self.entries:
-                messagebox.showwarning("No Files", "No folders or CSV files found in the current directory.")
-            else:
-                for entry in self.entries:
-                    self.file_listbox.insert(tk.END, entry)
-                # Auto-select the first entry and set focus
-                self.file_listbox.selection_set(0)
-                self.file_listbox.focus_set()
-
-            # Update current path label with relative path
-            relative_path = os.path.relpath(self.current_path, self.program_root)
-            self.current_path_label.config(text=f"Current Path: {relative_path}")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to load entries:\n{str(e)}")
+        self.csv_files = [f for f in os.listdir(self.folder_path) if f.endswith('.csv')]
+        if not self.csv_files:
+            messagebox.showwarning("No Files", "No CSV files found in the folder.")
+        else:
+            for file in self.csv_files:
+                self.file_listbox.insert(tk.END, file)
+            # Auto-select the first file
+            self.file_listbox.selection_set(0)
 
     def open_selected_file(self):
         """
@@ -234,22 +164,12 @@ class InventoryApp:
             messagebox.showwarning("No Selection", "Please select a file or folder.")
             return
 
-        selected_entry = self.entries[selected_index[0]]
-        selected_path = os.path.join(self.current_path, selected_entry)
+        selected_file = self.csv_files[selected_index[0]]
+        file_path = os.path.join(self.folder_path, selected_file)
 
-        self.search_var.set("")  # Reset search field on navigation
-
-        if os.path.isdir(selected_path):
-            # Navigate into the folder
-            self.current_path = selected_path
-            self.refresh_file_list()
-        elif selected_path.endswith('.csv'):
-            # Load and display the CSV file
-            room_name, evidence_entries = load_data(selected_path)
-            if evidence_entries:
-                self.qr_code_viewer(room_name, evidence_entries)
-        else:
-            messagebox.showerror("Invalid Selection", "Please select a valid folder or CSV file.")
+        room_name, evidence_entries = load_data(file_path)
+        if evidence_entries:
+            self.qr_code_viewer(room_name, evidence_entries)
 
     def qr_code_viewer(self, room_name, evidence_entries):
         self.clear_view()
@@ -301,12 +221,7 @@ class InventoryApp:
         Display the current QR code, owner, and name.
         """
         inventarizacni_cislo, owner, name = self.evidence_entries[self.index]
-
-        # Remove accents from Inventarizační číslo
-        normalized_code = remove_accents(inventarizacni_cislo)
-        
-        # Update labels with normalized data
-        self.label_code.config(text=f"{normalized_code}")
+        self.label_code.config(text=f"{inventarizacni_cislo}")
         self.label_owner.config(text=f"{owner}")
         self.label_name.config(text=f"{name}")
 
@@ -329,15 +244,6 @@ class InventoryApp:
         if self.index > 0:
             self.index -= 1
             self.show_qr_code()
-    
-    def go_back(self):
-        """
-        Go back to the parent directory and reset search.
-        """
-        if hasattr(self, "program_root") and self.current_path != self.program_root:
-            self.current_path = os.path.dirname(self.current_path)
-            self.search_var.set("")  # Reset search field on navigation
-            self.refresh_file_list()
 
 # Run the application
 if __name__ == "__main__":
