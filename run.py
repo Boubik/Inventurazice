@@ -342,6 +342,8 @@ class InventoryApp:
 # Run the application
 if __name__ == "__main__":
     root = tk.Tk()
+    root.attributes('-topmost', True)  # Bring the window to the top
+    root.focus_force()  # Force focus on the window
     app = InventoryApp(root)
     app.program_root = os.getcwd()  # Set the root directory here
     root.mainloop()
