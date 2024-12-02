@@ -85,9 +85,9 @@ class InventoryApp:
         ttk.Label(search_frame, text="Search: ").pack(side=tk.LEFT, padx=5)
 
         self.search_var = tk.StringVar()  # Variable to store search input
-        search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
-        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-        search_entry.bind("<KeyRelease>", lambda event: self.perform_search())  # Trigger search on key release
+        self.search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
+        self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        self.search_entry.configure(state="disabled")  # Initially disabled to avoid direct focus
 
         ttk.Button(search_frame, text="Search", command=self.perform_search).pack(side=tk.LEFT, padx=5)
 
@@ -104,14 +104,14 @@ class InventoryApp:
         # Populate listbox
         self.refresh_file_list()
 
-        # Bind Enter key to open the selected file or folder
-        self.file_listbox.bind("<Return>", lambda event: self.open_file())
-
-        # Bind Double-Click to open the selected file or folder
-        self.file_listbox.bind("<Double-1>", lambda event: self.open_selected_file())
-
-        # Bind Escape key
-        self.root.bind("<Escape>", lambda event: self.go_back() if hasattr(self, "program_root") and self.current_path != self.program_root else None)
+        # Bind keys for search, navigation, and going back
+        self.file_listbox.bind("<Key>", self.listbox_keypress)  # Capture alphanumeric keys for search
+        self.file_listbox.bind("<BackSpace>", self.delete_from_search)  # Handle Backspace for deleting search
+        self.file_listbox.bind("<Up>", lambda event: self.navigate_listbox(-1))
+        self.file_listbox.bind("<Down>", lambda event: self.navigate_listbox(1))
+        self.file_listbox.bind("<Return>", lambda event: self.open_file())  # Open selected item
+        self.file_listbox.bind("<Escape>", lambda event: self.go_back())  # Go back in directories
+        self.file_listbox.bind("<Double-1>", lambda event: self.open_selected_file())  # Fix for double-click to open
 
         # Buttons (Centered)
         button_frame = ttk.Frame(main_frame)
@@ -121,6 +121,50 @@ class InventoryApp:
         ttk.Button(button_frame, text="Go Back", command=self.go_back).grid(row=0, column=0, padx=10, pady=5, sticky="ew")
         ttk.Button(button_frame, text="Refresh", command=self.refresh_file_list).grid(row=1, column=0, padx=10, pady=5, sticky="ew")
         ttk.Button(button_frame, text="Open", command=self.open_file).grid(row=2, column=0, padx=10, pady=5, sticky="ew")
+
+        # Set initial focus to Listbox
+        self.file_listbox.focus_set()
+
+    def listbox_keypress(self, event):
+        """
+        Handle keypress in the Listbox. If alphanumeric key, update the search bar and perform search.
+        """
+        if event.char.isprintable():  # Check if the key is printable (e.g., letter or number)
+            # Enable search entry temporarily to update its value
+            self.search_entry.configure(state="normal")
+            self.search_var.set(self.search_var.get() + event.char)  # Append the key to search bar
+            self.search_entry.configure(state="disabled")  # Disable it back for focus consistency
+            self.perform_search()  # Perform search based on updated search query
+
+
+    def delete_from_search(self, event):
+        """
+        Handle Backspace in the Listbox to delete characters from the search bar.
+        """
+        if self.search_var.get():  # Ensure there's something to delete
+            # Enable search entry temporarily to update its value
+            self.search_entry.configure(state="normal")
+            self.search_var.set(self.search_var.get()[:-1])  # Remove the last character
+            self.search_entry.configure(state="disabled")  # Disable it back for focus consistency
+            self.perform_search()  # Perform search based on updated search query
+
+
+    def navigate_listbox(self, direction):
+        """
+        Navigate the Listbox using the arrow keys, moving by one item at a time.
+        """
+        selected = self.file_listbox.curselection()
+        if selected:
+            new_index = max(0, min(selected[0] + direction, self.file_listbox.size() - 1))
+        else:
+            new_index = 0  # If no item is selected, default to the first item
+
+        self.file_listbox.selection_clear(0, tk.END)
+        self.file_listbox.selection_set(new_index)
+        self.file_listbox.activate(new_index)
+        self.file_listbox.see(new_index)  # Ensure the item is visible
+
+        return "break"  # Prevent default Listbox behavior
 
     def perform_search(self):
         """
@@ -164,9 +208,12 @@ class InventoryApp:
             messagebox.showerror("Error", f"Failed to load entries:\n{str(e)}")
 
     def open_selected_file(self):
+        """
+        Handle double-click to open the selected file or folder.
+        """
         selected_index = self.file_listbox.curselection()
         if selected_index:
-            self.open_file()
+            self.open_file()  # Reuse the open_file method for consistent behavior
 
     def open_file(self):
         """
