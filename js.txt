@@ -1,53 +1,76 @@
-(function() {
-    let data = [];
-
-    // Locate the input field for "mistnost" and get its value
-    const roomInput = document.querySelector('input[name="mistnost"]');
-    if (!roomInput) {
-        console.error('Input field for "mistnost" not found.');
-        return; // Exit the script
+(function () {
+  // Find the document that actually contains the "zaznamy" table.
+  function findDocumentWithTable() {
+    // Check current document first.
+    if (document.querySelector('table.zaznamy')) {
+      return document;
     }
-
-    const roomValue = roomInput.value.trim();
-    if (roomValue) {
-        data.push([roomValue, `Místnost: ${roomValue};`]);
+    // Otherwise scan frames/iframes.
+    for (const frame of document.querySelectorAll('frame, iframe')) {
+      let doc;
+      try {
+        doc = frame.contentDocument || frame.contentWindow.document;
+      } catch (e) {
+        continue; // skip if cross‑origin
+      }
+      if (doc && doc.querySelector('table.zaznamy')) {
+          return doc;
+      }
     }
+    return document; // fallback
+  }
 
-    // Select the table with class "zaznamy"
-    const table = document.querySelector('table.zaznamy');
-    if (!table) {
-        console.error('Table with class "zaznamy" not found.');
-        return; // Exit the script
+  const doc = findDocumentWithTable();
+  const data = [];
+
+  // Retrieve the room value if present.
+  const roomInput = doc.querySelector('input[name="mistnost"]');
+  const roomValue = roomInput && roomInput.value ? roomInput.value.trim() : '';
+  if (roomValue) {
+    data.push([roomValue, `Místnost: ${roomValue};`]);
+  }
+
+  // Locate the table containing the asset records.
+  const table = doc.querySelector('table.zaznamy');
+  if (!table) {
+    console.error('Table with class "zaznamy" not found.');
+    return;
+  }
+
+  // Extract data from rows that have at least 5 <td> elements.
+  table.querySelectorAll('tr').forEach(row => {
+    const cells = row.querySelectorAll('td');
+    if (cells.length > 4) {
+      const osoba = cells[2].innerText.trim();
+      const evidencni = cells[3].innerText.trim();
+      const nazev = cells[4].innerText.trim();
+      if (evidencni && osoba && nazev) {
+        data.push([evidencni, osoba, nazev]);
+      }
     }
+  });
 
-    // Find all rows within the table body
-    table.querySelectorAll('tr').forEach(row => {
-        const cells = row.querySelectorAll('td');
-        if (cells.length > 4) {
-            // Adjust indexes based on your table structure
-            const evidencniCislo = cells[3]?.textContent.trim() || ""; // Column with "Evidenční číslo"
-            const osoba = cells[2]?.textContent.trim() || "";          // Column with "Odpovědná osoba"
-            const nazev = cells[4]?.textContent.trim() || "";          // Column with "Název"
-            if (evidencniCislo && osoba && nazev) {
-                data.push([evidencniCislo, osoba, nazev]);
-            }
-        }
-    });
+  console.log('Data found:', data);
 
-    console.log("Data found:", data);
+  if (!data.length) {
+    console.log('No data entries found.');
+    return;
+  }
 
-    // Generate and download CSV with semicolon as separator
-    if (data.length > 0) {
-        const csvContent = "data:text/csv;charset=utf-8," + data.map(e => e.join(";")).join("\n");
-        const encodedUri = encodeURI(csvContent);
-        const fileName = `evidencni_cisla_${roomValue}.csv`.replace(/[^a-zA-Z0-9._-]/g, "_"); // Sanitize filename
-        const link = document.createElement("a");
-        link.setAttribute("href", encodedUri);
-        link.setAttribute("download", fileName);
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-    } else {
-        console.log("No data entries found.");
-    }
+  // Create CSV and trigger download.
+  const csvContent = data.map(row => row.join(';')).join('\n');
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const fileName = `evidencni_cisla_${roomValue || 'vse'}.csv`.replace(/[^a-zA-Z0-9._-]/g, '_');
+  if (navigator.msSaveBlob) {
+    // Support for IE
+    navigator.msSaveBlob(blob, fileName);
+  } else {
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(link.href);
+  }
 })();
