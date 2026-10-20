@@ -6,7 +6,8 @@
 
     // Controlled first-level scan. Add another starting character here if a
     // new named location appears in the building in the future.
-    initialChars: '-0123456789CR',
+    //initialChars: '-0123456789ACRSL',
+    initialChars: '-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ',
 
     // Used only if one of the controlled prefixes still returns >9000 rows.
     splitChars: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-._ ',
