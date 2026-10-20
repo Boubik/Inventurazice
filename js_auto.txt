@@ -1,0 +1,369 @@
+(async function () {
+  'use strict';
+
+  // ============================================================
+  // CONFIGURATION
+  // ============================================================
+  const CONFIG = {
+    // Change only this for another building/object.
+    buildingPrefix: '64/',
+
+    // Characters used when a query is still too large (>9000).
+    // The FIS search appears to be substring-based, so 64/ -> 64/0, 64/1, ...
+    // If your room names use other first/next characters, add them here.
+    splitChars: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-._',
+
+    // Safety limits so the script cannot accidentally hammer the server forever.
+    delayMs: 300,
+    maxDepth: 7,
+    maxRequests: 800,
+
+    // Current FIS form field used for the room/location filter.
+    roomFieldName: 'mistnost',
+
+    // Downloaded CSV name.
+    outputFileName: 'evidencni_cisla_auto_64.csv',
+  };
+
+  // ============================================================
+  // HELPERS
+  // ============================================================
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+  function normalizeText(value) {
+    return String(value || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+  }
+
+  function normalizeRoom(value) {
+    return String(value || '')
+      .trim()
+      .replace(/\\/g, '/')
+      .replace(/^\s*(místnost|mistnost|lokalita|umístění|umisteni)\s*:\s*/i, '')
+      .trim();
+  }
+
+  function locationCode(value) {
+    const normalized = normalizeRoom(value);
+    if (!normalized) return '';
+    return normalized.split(/\s+/)[0];
+  }
+
+  function csvCell(value) {
+    const text = String(value == null ? '' : value);
+    if (/[;"\r\n]/.test(text)) return '"' + text.replace(/"/g, '""') + '"';
+    return text;
+  }
+
+  function findWorkingDocument() {
+    const candidates = [document];
+    for (const frame of document.querySelectorAll('frame, iframe')) {
+      try {
+        const doc = frame.contentDocument || frame.contentWindow.document;
+        if (doc) candidates.push(doc);
+      } catch (_) {
+        // Ignore cross-origin frames.
+      }
+    }
+
+    for (const doc of candidates) {
+      if (doc.querySelector(`[name="${CONFIG.roomFieldName}"]`)) return doc;
+    }
+    return document;
+  }
+
+  function findFilterSubmitter(form) {
+    const submits = Array.from(form.querySelectorAll(
+      'button[type="submit"], input[type="submit"], input[type="image"]'
+    ));
+
+    return submits.find(element => {
+      const text = normalizeText(element.value || element.textContent || '');
+      return text.includes('filtrovat');
+    }) || submits[0] || null;
+  }
+
+  function cloneFormData(form, roomValue) {
+    const data = new FormData(form);
+    data.set(CONFIG.roomFieldName, roomValue);
+
+    const submitter = findFilterSubmitter(form);
+    if (submitter && submitter.name && !data.has(submitter.name)) {
+      data.append(submitter.name, submitter.value || '');
+    }
+
+    return data;
+  }
+
+  function formDataToSearchParams(formData) {
+    const params = new URLSearchParams();
+    for (const [key, value] of formData.entries()) {
+      if (typeof value === 'string') params.append(key, value);
+    }
+    return params;
+  }
+
+  function findColumnIndex(table, names) {
+    for (const row of table.querySelectorAll('tr')) {
+      const cells = Array.from(row.querySelectorAll('th'));
+      if (!cells.length) continue;
+
+      for (let index = 0; index < cells.length; index++) {
+        const header = normalizeText(cells[index].innerText || cells[index].textContent || '');
+        if (names.some(name => header.includes(name))) return index;
+      }
+    }
+    return -1;
+  }
+
+  function isTooLarge(doc) {
+    const text = normalizeText(doc.body ? doc.body.textContent : '');
+    return (
+      text.includes('vice nez 9000') ||
+      text.includes('pozadavek na velky objem dat') ||
+      text.includes('velky objem dat')
+    );
+  }
+
+  function extractRows(doc) {
+    const table = doc.querySelector('table.zaznamy');
+    if (!table) return [];
+
+    const personIndex = findColumnIndex(table, ['odpovedna osoba']);
+    const inventoryIndex = findColumnIndex(table, ['evidencni cislo', 'inventarni cislo']);
+    const nameIndex = findColumnIndex(table, ['nazev']);
+    const locationIndex = findColumnIndex(table, ['umisteni', 'mistnost', 'lokalita']);
+
+    // Fallbacks match the current FIS table layout from the working manual exporter.
+    const idxPerson = personIndex >= 0 ? personIndex : 2;
+    const idxInventory = inventoryIndex >= 0 ? inventoryIndex : 3;
+    const idxName = nameIndex >= 0 ? nameIndex : 4;
+    const idxLocation = locationIndex >= 0 ? locationIndex : 5;
+
+    const rows = [];
+
+    for (const tr of table.querySelectorAll('tr')) {
+      const cells = Array.from(tr.querySelectorAll('td'));
+      if (!cells.length) continue;
+      if (Math.max(idxPerson, idxInventory, idxName, idxLocation) >= cells.length) continue;
+
+      const owner = (cells[idxPerson].innerText || cells[idxPerson].textContent || '').trim();
+      const inventory = (cells[idxInventory].innerText || cells[idxInventory].textContent || '').trim();
+      const name = (cells[idxName].innerText || cells[idxName].textContent || '').trim();
+      const room = locationCode(cells[idxLocation].innerText || cells[idxLocation].textContent || '');
+
+      if (!inventory || !name || !room) continue;
+      if (!room.startsWith(CONFIG.buildingPrefix)) continue;
+
+      rows.push({ inventory, owner, name, room });
+    }
+
+    return rows;
+  }
+
+  async function fetchFilteredDocument(form, sourceDoc, roomValue) {
+    const method = (form.method || 'GET').toUpperCase();
+    const action = new URL(form.action || sourceDoc.location.href, sourceDoc.location.href);
+    const formData = cloneFormData(form, roomValue);
+
+    const options = {
+      method,
+      credentials: 'same-origin',
+      cache: 'no-store',
+      redirect: 'follow',
+    };
+
+    let url = action;
+
+    if (method === 'GET') {
+      const params = formDataToSearchParams(formData);
+      for (const [key, value] of params.entries()) url.searchParams.append(key, value);
+    } else {
+      const enctype = (form.enctype || '').toLowerCase();
+      if (enctype.includes('multipart/form-data')) {
+        options.body = formData;
+      } else {
+        options.body = formDataToSearchParams(formData);
+        options.headers = {
+          'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+        };
+      }
+    }
+
+    const response = await fetch(url.toString(), options);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} ${response.statusText} for ${roomValue}`);
+    }
+
+    const html = await response.text();
+    return new DOMParser().parseFromString(html, 'text/html');
+  }
+
+  function downloadCsv(rows) {
+    const building = CONFIG.buildingPrefix.replace(/\/$/, '');
+    const data = [[building, `Místnost: více místností objektu ${building}`, '', '']];
+
+    const sorted = Array.from(rows.values()).sort((a, b) => {
+      const roomCompare = a.room.localeCompare(b.room, 'cs', { numeric: true });
+      if (roomCompare !== 0) return roomCompare;
+      return a.inventory.localeCompare(b.inventory, 'cs', { numeric: true });
+    });
+
+    for (const row of sorted) {
+      data.push([row.inventory, row.owner, row.name, row.room]);
+    }
+
+    const csv = data.map(row => row.map(csvCell).join(';')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = CONFIG.outputFileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function createStatusBox() {
+    const old = document.getElementById('inventory-auto-export-status');
+    if (old) old.remove();
+
+    const box = document.createElement('div');
+    box.id = 'inventory-auto-export-status';
+    box.style.cssText = [
+      'position:fixed',
+      'right:16px',
+      'bottom:16px',
+      'z-index:2147483647',
+      'width:390px',
+      'max-width:calc(100vw - 32px)',
+      'padding:14px',
+      'background:#1f2327',
+      'color:#f5f5f5',
+      'border:1px solid #666',
+      'border-radius:8px',
+      'box-shadow:0 4px 18px rgba(0,0,0,.45)',
+      'font:13px/1.4 sans-serif',
+    ].join(';');
+
+    box.innerHTML = `
+      <div style="font-weight:bold;margin-bottom:6px">Automatický export místností</div>
+      <div id="inventory-auto-export-line">Připravuji…</div>
+      <div id="inventory-auto-export-stats" style="margin-top:5px;color:#bbb"></div>
+      <button id="inventory-auto-export-cancel" style="margin-top:9px;padding:5px 10px">Zrušit</button>
+    `;
+
+    document.body.appendChild(box);
+    return box;
+  }
+
+  // ============================================================
+  // MAIN
+  // ============================================================
+  const sourceDoc = findWorkingDocument();
+  const roomControl = sourceDoc.querySelector(`[name="${CONFIG.roomFieldName}"]`);
+  if (!roomControl) {
+    console.error(`Field ${CONFIG.roomFieldName} was not found.`);
+    return;
+  }
+
+  const form = roomControl.closest('form');
+  if (!form) {
+    console.error('The room filter is not inside a form.');
+    return;
+  }
+
+  const statusBox = createStatusBox();
+  const statusLine = statusBox.querySelector('#inventory-auto-export-line');
+  const statsLine = statusBox.querySelector('#inventory-auto-export-stats');
+  const cancelButton = statusBox.querySelector('#inventory-auto-export-cancel');
+
+  let cancelled = false;
+  cancelButton.addEventListener('click', () => {
+    cancelled = true;
+    statusLine.textContent = 'Ruším po dokončení právě běžícího požadavku…';
+  });
+
+  const queue = [{ prefix: CONFIG.buildingPrefix, depth: 0 }];
+  const rows = new Map();
+  const rooms = new Set();
+  const visited = new Set();
+  let requests = 0;
+  let oversized = 0;
+  let empty = 0;
+
+  try {
+    while (queue.length && !cancelled) {
+      if (requests >= CONFIG.maxRequests) {
+        throw new Error(`Safety limit reached: ${CONFIG.maxRequests} requests.`);
+      }
+
+      const job = queue.shift();
+      if (!job || visited.has(job.prefix)) continue;
+      visited.add(job.prefix);
+
+      statusLine.textContent = `Hledám: ${job.prefix}`;
+      statsLine.textContent = `Požadavky: ${requests} • fronta: ${queue.length} • místnosti: ${rooms.size} • položky: ${rows.size}`;
+
+      const resultDoc = await fetchFilteredDocument(form, sourceDoc, job.prefix);
+      requests += 1;
+
+      if (isTooLarge(resultDoc)) {
+        oversized += 1;
+
+        if (job.depth >= CONFIG.maxDepth) {
+          throw new Error(`Prefix ${job.prefix} is still too large at maxDepth=${CONFIG.maxDepth}.`);
+        }
+
+        for (const char of CONFIG.splitChars) {
+          queue.push({ prefix: job.prefix + char, depth: job.depth + 1 });
+        }
+      } else {
+        const found = extractRows(resultDoc);
+        if (!found.length) empty += 1;
+
+        for (const row of found) {
+          rooms.add(row.room);
+
+          const existing = rows.get(row.inventory);
+          if (existing && existing.room !== row.room) {
+            console.warn('Inventory appears in multiple locations:', row.inventory, existing.room, row.room);
+          }
+          rows.set(row.inventory, row);
+        }
+      }
+
+      statsLine.textContent = `Požadavky: ${requests} • fronta: ${queue.length} • místnosti: ${rooms.size} • položky: ${rows.size}`;
+      await sleep(CONFIG.delayMs);
+    }
+
+    if (cancelled) {
+      statusLine.textContent = 'Export zrušen.';
+      return;
+    }
+
+    if (!rows.size) {
+      throw new Error('No inventory rows were found. The FIS form or table structure may differ from the expected layout.');
+    }
+
+    statusLine.textContent = 'Hotovo – vytvářím CSV…';
+    statsLine.textContent = `Požadavky: ${requests} • rozdělení kvůli limitu: ${oversized} • prázdné dotazy: ${empty} • místnosti: ${rooms.size} • položky: ${rows.size}`;
+
+    downloadCsv(rows);
+    statusLine.textContent = `Hotovo. Staženo ${rows.size} položek z ${rooms.size} místností.`;
+
+    console.log('Automatic inventory export finished.', {
+      requests,
+      oversized,
+      empty,
+      rooms: Array.from(rooms).sort(),
+      rows: rows.size,
+    });
+  } catch (error) {
+    console.error('Automatic inventory export failed:', error);
+    statusLine.textContent = 'Chyba: ' + (error && error.message ? error.message : String(error));
+  }
+})();
