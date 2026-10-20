@@ -1,100 +1,112 @@
 # Inventory QR Code Viewer
 
-A Python-based desktop application for generating and viewing QR codes for inventory items. This tool processes a CSV file containing inventory data, generates QR codes for each item (including room information), and displays them in a user-friendly interface—ideal for inventory tracking and management.
+Desktop utility for preparing inventory CSV exports and displaying QR codes for rooms and individual assets.
 
-## Features
+## Components
 
-- **CSV File Support**: Handles inventory data with room names and item details.
-- **Automatic QR Code Generation**: Creates QR codes for each item and corresponding rooms.
-- **Detailed Item Display**:
-  - Inventory Number (`Inventarizační číslo`)
-  - Responsible Person (`Odpovědná osoba`)
-  - Item Name (`Název`)
-- **User-Friendly Navigation**:
-  - Displays current position and total count (e.g., `64/3.41 - 1/73`)
-  - Dark-themed, responsive interface
+- `parser.py` – imports one or more CSV files and creates normalized room/owner views under `out/`.
+- `run.py` – scalable Tkinter QR viewer for the generated CSV files.
+- `js.txt` – browser snippet for exporting the currently displayed inventory table to CSV.
 
-## Prerequisites
+## Parser
 
-- Python 3.8 or later installed on your system.
-- Required Python packages (see [Installation](#installation)).
+The parser accepts both formats used by this project:
 
-# Installation
+1. Room exports with three columns:
 
-1. **Clone the Repository**:
-
-	```bash
-	git clone https://github.com/Boubik/Inventurazice.git
-	cd Inventurazice
-	```
-
-2.	Set Up Virtual Environment (Optional but recommended):
-
-	```bash
-	python -m venv venv
-	source venv/bin/activate   # On Windows: venv\Scripts\activate
-	```
-
-	3.	Install Required Packages:
-
-	```bash
-	pip install -r requirements.txt
-	```
-
-
-	4.	Place Your CSV File:
-		•	Ensure your CSV file is in the inv folder (create this folder if it doesn’t exist).
-		•	CSV Structure:
-
-	```csv
-	RoomName;RoomName
-	Inventarizační číslo;Odpovědná osoba;Název
-	001234567;John Doe;Office Desk
-	001234568;Jane Smith;Chair
-	```
-
-
-
-# Usage
-
-1.	Run the Application:
-
-	```bash
-	python run.py
-	```
-
-
-2.	Select a CSV File:
-	•	The app will display available CSV files in the inv folder. Choose one to start.
-3.	Navigate Through Items:
-	•	Use the Next and Back buttons or the arrow keys (→ for next, ← for previous) to navigate through the items.
-4.	View QR Codes:
-	•	Each item will display:
-	•	QR Code (based on Inventarizační číslo)
-	•	Responsible Person (Odpovědná osoba)
-	•	Item Name (Název)
-	•	Room name and current position (e.g., 64/3.41 - 1/73)
-5.	Exit or Return to Menu:
-	•	Use the Escape key or the Menu button to return to the file selection screen.
-
-# File Structure
-
-```
-inventory-qr-code-viewer/
-├── inv/                       # Folder for CSV files
-│   └── example.csv            # Example CSV file
-├── run.py                     # Main application file
-├── requirements.txt           # Python dependencies
-└── README.md                  # Project documentation
+```csv
+64/7.06;Místnost: 64/7.06;
+1003201/1;Owner;Projector
 ```
 
-# Dependencies
+2. The older 6+ column inventory export where the location is stored in column 6.
 
-The required Python packages are listed in requirements.txt:
-	•	tkinter (bundled with Python)
-	•	qrcode
-	•	pillow
+### Usage
 
-# License
+Process explicit files:
 
-This project is licensed under the MIT License. See the LICENSE file for details.
+```bash
+python parser.py export1.csv export2.csv export3.csv
+```
+
+Process a directory recursively:
+
+```bash
+python parser.py ./exports
+```
+
+With no input arguments, all CSV files below the current directory are scanned. The selected output directory is excluded automatically:
+
+```bash
+python parser.py
+```
+
+Choose another output directory:
+
+```bash
+python parser.py ./exports --output prepared
+```
+
+Outputs are regenerated on every run:
+
+```text
+out/
+├── rooms/
+│   └── 64/
+│       └── 7.06.csv
+└── names/
+    └── Owner Name/
+        └── 64/
+            └── 7.06.csv
+```
+
+Inventory numbers are deduplicated across all supplied inputs. Re-running the parser with the same sources does not append duplicate rows. If the same room appears once as `7.06` and once as `64/7.06`, the fully qualified form is preferred. Genuine conflicts are reported in the console and the later input wins.
+
+## QR viewer
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Run:
+
+```bash
+python run.py
+```
+
+The application lets you browse folders and CSV files, search, and move through room/item QR codes using the buttons or the left/right arrow keys.
+
+### Window behavior
+
+The window is no longer forced to stay above other applications. Use the `Vždy navrchu` checkbox when you temporarily want always-on-top behavior.
+
+The layout and QR image resize with the window, and the minimum window size is smaller so the application can be used next to another program.
+
+## Browser export (`js.txt`)
+
+The browser helper tries to export the full room ID, for example `64/7.06`, instead of only `7.06`. It first looks for a full location already rendered on the page and then falls back to common building/object form controls.
+
+If the source page does not expose the building anywhere, JavaScript cannot infer it reliably. In that case it keeps the room value it can see and logs a warning in the browser console.
+
+The CSV writer also quotes values containing semicolons, quotes, or line breaks.
+
+## Tests
+
+Parser regression tests use only the Python standard library:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+## Requirements
+
+- Python 3.8+
+- tkinter (normally bundled with Python)
+- qrcode
+- Pillow
+
+## License
+
+MIT – see `LICENSE`.
