@@ -13,6 +13,10 @@ from tkinter import messagebox, ttk
 from tkinter import font as tkfont
 
 APP_TITLE = "Inventarizace – QR"
+BACKGROUND = "#252525"
+PANEL = "#303030"
+FOREGROUND = "#f5f5f5"
+MUTED = "#bdbdbd"
 GENERIC_PARENT_DIRS = {"rooms", "room", "out", "inv", "inventory", "inventarizace"}
 
 
@@ -141,7 +145,7 @@ class InventoryApp:
         self.root = root
         self.root.title(APP_TITLE)
         self.root.geometry("900x720")
-        self.root.minsize(520, 480)
+        self.root.minsize(420, 380)
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
@@ -154,6 +158,7 @@ class InventoryApp:
         self._search_trace = None
         self._resize_after_id: str | None = None
         self._qr_source_image: Image.Image | None = None
+        self._qr_photo: ImageTk.PhotoImage | None = None
         self._last_qr_size = 0
 
         self._configure_styles()
@@ -166,21 +171,26 @@ class InventoryApp:
         except tk.TclError:
             pass
 
-        background = "#252525"
-        panel = "#303030"
-        foreground = "#f5f5f5"
-        muted = "#bdbdbd"
-
-        self.root.configure(background=background)
-        style.configure("TFrame", background=background)
-        style.configure("Panel.TFrame", background=panel)
-        style.configure("TLabel", background=background, foreground=foreground)
-        style.configure("Muted.TLabel", background=background, foreground=muted)
-        style.configure("Title.TLabel", background=background, foreground=foreground, font=("TkDefaultFont", 17, "bold"))
-        style.configure("Code.TLabel", background=background, foreground=foreground, font=("TkDefaultFont", 16, "bold"))
+        self.root.configure(background=BACKGROUND)
+        style.configure("TFrame", background=BACKGROUND)
+        style.configure("Panel.TFrame", background=PANEL)
+        style.configure("TLabel", background=BACKGROUND, foreground=FOREGROUND)
+        style.configure("Muted.TLabel", background=BACKGROUND, foreground=MUTED)
+        style.configure(
+            "Title.TLabel",
+            background=BACKGROUND,
+            foreground=FOREGROUND,
+            font=("TkDefaultFont", 17, "bold"),
+        )
+        style.configure(
+            "Code.TLabel",
+            background=BACKGROUND,
+            foreground=FOREGROUND,
+            font=("TkDefaultFont", 16, "bold"),
+        )
         style.configure("TButton", padding=(10, 7))
-        style.configure("TCheckbutton", background=background, foreground=foreground)
-        style.map("TCheckbutton", background=[("active", background)])
+        style.configure("TCheckbutton", background=BACKGROUND, foreground=FOREGROUND)
+        style.map("TCheckbutton", background=[("active", BACKGROUND)])
 
         default_font = tkfont.nametofont("TkDefaultFont")
         default_font.configure(size=max(default_font.cget("size"), 10))
@@ -203,6 +213,7 @@ class InventoryApp:
             except tk.TclError:
                 pass
             self._search_trace = None
+        self._qr_photo = None
         for widget in self.root.winfo_children():
             widget.destroy()
 
@@ -216,7 +227,9 @@ class InventoryApp:
 
         ttk.Label(header, text=title, style="Title.TLabel").grid(row=0, column=0, sticky="w")
         if subtitle:
-            ttk.Label(header, text=subtitle, style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(2, 0))
+            ttk.Label(header, text=subtitle, style="Muted.TLabel").grid(
+                row=1, column=0, sticky="w", pady=(2, 0)
+            )
 
         ttk.Checkbutton(
             header,
@@ -244,7 +257,9 @@ class InventoryApp:
         ttk.Label(search_frame, text="Hledat:").grid(row=0, column=0, padx=(0, 8))
         self.search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
         self.search_entry.grid(row=0, column=1, sticky="ew")
-        ttk.Button(search_frame, text="Vymazat", command=lambda: self.search_var.set("")).grid(row=0, column=2, padx=(8, 0))
+        ttk.Button(search_frame, text="Vymazat", command=lambda: self.search_var.set("")).grid(
+            row=0, column=2, padx=(8, 0)
+        )
 
         self.status_label = ttk.Label(main_frame, text="", style="Muted.TLabel")
         self.status_label.grid(row=2, column=0, sticky="w", pady=(0, 5))
@@ -258,8 +273,8 @@ class InventoryApp:
             listbox_frame,
             font=tkfont.nametofont("TkDefaultFont"),
             activestyle="none",
-            bg="#303030",
-            fg="#f5f5f5",
+            bg=PANEL,
+            fg=FOREGROUND,
             selectbackground="#4b6985",
             selectforeground="#ffffff",
             relief="flat",
@@ -281,9 +296,15 @@ class InventoryApp:
         buttons.grid(row=4, column=0, sticky="ew", pady=(12, 0))
         for column in range(3):
             buttons.columnconfigure(column, weight=1)
-        ttk.Button(buttons, text="← O úroveň výš", command=self.go_back).grid(row=0, column=0, sticky="ew", padx=(0, 5))
-        ttk.Button(buttons, text="Obnovit", command=self.refresh_file_list).grid(row=0, column=1, sticky="ew", padx=5)
-        ttk.Button(buttons, text="Otevřít", command=self.open_file).grid(row=0, column=2, sticky="ew", padx=(5, 0))
+        ttk.Button(buttons, text="← O úroveň výš", command=self.go_back).grid(
+            row=0, column=0, sticky="ew", padx=(0, 5)
+        )
+        ttk.Button(buttons, text="Obnovit", command=self.refresh_file_list).grid(
+            row=0, column=1, sticky="ew", padx=5
+        )
+        ttk.Button(buttons, text="Otevřít", command=self.open_file).grid(
+            row=0, column=2, sticky="ew", padx=(5, 0)
+        )
 
         self._search_trace = self.search_var.trace_add("write", lambda *_args: self.perform_search())
         self.root.bind("<Escape>", lambda _event: self.go_back())
@@ -292,7 +313,20 @@ class InventoryApp:
         self.file_listbox.focus_set()
 
     def _listbox_type_to_search(self, event: tk.Event) -> str | None:
-        if event.keysym in {"Up", "Down", "Left", "Right", "Return", "Escape", "BackSpace", "Delete", "Home", "End", "Prior", "Next"}:
+        if event.keysym in {
+            "Up",
+            "Down",
+            "Left",
+            "Right",
+            "Return",
+            "Escape",
+            "BackSpace",
+            "Delete",
+            "Home",
+            "End",
+            "Prior",
+            "Next",
+        }:
             return None
         if event.char and event.char.isprintable():
             self.search_var.set(self.search_var.get() + event.char)
@@ -335,7 +369,13 @@ class InventoryApp:
                 key=str.casefold,
             )
             files = sorted(
-                [entry.name for entry in entries if entry.is_file() and entry.suffix.casefold() == ".csv" and not entry.name.startswith(".")],
+                [
+                    entry.name
+                    for entry in entries
+                    if entry.is_file()
+                    and entry.suffix.casefold() == ".csv"
+                    and not entry.name.startswith(".")
+                ],
                 key=str.casefold,
             )
             self.entries = folders + files
@@ -378,7 +418,7 @@ class InventoryApp:
         main_frame = ttk.Frame(self.root, padding=16)
         main_frame.grid(row=0, column=0, sticky="nsew")
         main_frame.columnconfigure(0, weight=1)
-        main_frame.rowconfigure(3, weight=1)
+        main_frame.rowconfigure(3, weight=1, minsize=1)
 
         self._add_header(main_frame, "QR inventarizace", room_name or "Neznámá místnost")
 
@@ -386,63 +426,99 @@ class InventoryApp:
         self.position_label.grid(row=1, column=0, sticky="ew", pady=(0, 5))
 
         self.label_code = ttk.Label(main_frame, text="", style="Code.TLabel", anchor="center")
-        self.label_code.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        self.label_code.grid(row=2, column=0, sticky="ew", pady=(0, 6))
 
-        self.qr_container = ttk.Frame(main_frame)
-        self.qr_container.grid(row=3, column=0, sticky="nsew")
-        self.qr_container.columnconfigure(0, weight=1)
-        self.qr_container.rowconfigure(0, weight=1)
-        self.qr_label = ttk.Label(self.qr_container, anchor="center")
-        self.qr_label.grid(row=0, column=0, sticky="nsew")
+        self.qr_canvas = tk.Canvas(
+            main_frame,
+            bg=BACKGROUND,
+            highlightthickness=0,
+            borderwidth=0,
+            relief="flat",
+        )
+        self.qr_canvas.grid(row=3, column=0, sticky="nsew")
 
         details = ttk.Frame(main_frame)
-        details.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+        details.grid(row=4, column=0, sticky="ew", pady=(6, 0))
         details.columnconfigure(0, weight=1)
         self.label_owner = ttk.Label(details, text="", anchor="center", justify="center")
         self.label_owner.grid(row=0, column=0, sticky="ew")
-        self.label_name = ttk.Label(details, text="", anchor="center", justify="center", style="Muted.TLabel")
+        self.label_name = ttk.Label(
+            details,
+            text="",
+            anchor="center",
+            justify="center",
+            style="Muted.TLabel",
+        )
         self.label_name.grid(row=1, column=0, sticky="ew", pady=(3, 0))
 
         buttons = ttk.Frame(main_frame)
-        buttons.grid(row=5, column=0, sticky="ew", pady=(12, 0))
+        buttons.grid(row=5, column=0, sticky="ew", pady=(10, 0))
         for column in range(3):
             buttons.columnconfigure(column, weight=1)
-        ttk.Button(buttons, text="← Předchozí", command=self.show_previous).grid(row=0, column=0, sticky="ew", padx=(0, 5))
-        ttk.Button(buttons, text="Menu", command=self.file_selection_view).grid(row=0, column=1, sticky="ew", padx=5)
-        ttk.Button(buttons, text="Další →", command=self.show_next).grid(row=0, column=2, sticky="ew", padx=(5, 0))
+        ttk.Button(buttons, text="← Předchozí", command=self.show_previous).grid(
+            row=0, column=0, sticky="ew", padx=(0, 5)
+        )
+        ttk.Button(buttons, text="Menu", command=self.file_selection_view).grid(
+            row=0, column=1, sticky="ew", padx=5
+        )
+        ttk.Button(buttons, text="Další →", command=self.show_next).grid(
+            row=0, column=2, sticky="ew", padx=(5, 0)
+        )
 
         self.root.bind("<Right>", lambda _event: self.show_next())
         self.root.bind("<Left>", lambda _event: self.show_previous())
         self.root.bind("<Escape>", lambda _event: self.file_selection_view())
-        main_frame.bind("<Configure>", self._schedule_qr_resize)
+        main_frame.bind("<Configure>", self._update_detail_wrap)
+        self.qr_canvas.bind("<Configure>", self._schedule_qr_resize)
 
         self.show_qr_code()
 
-    def _schedule_qr_resize(self, event: tk.Event) -> None:
-        wrap = max(220, event.width - 50)
+    def _update_detail_wrap(self, event: tk.Event) -> None:
+        wrap = max(160, event.width - 40)
         self.label_owner.configure(wraplength=wrap)
         self.label_name.configure(wraplength=wrap)
+
+    def _schedule_qr_resize(self, _event: tk.Event | None = None) -> None:
         if self._resize_after_id is not None:
             try:
                 self.root.after_cancel(self._resize_after_id)
             except tk.TclError:
                 pass
-        self._resize_after_id = self.root.after(40, self._render_qr_for_current_size)
+        self._resize_after_id = self.root.after(25, self._render_qr_for_current_size)
 
     def _render_qr_for_current_size(self) -> None:
         self._resize_after_id = None
-        if self._qr_source_image is None or not self.qr_label.winfo_exists():
+        if self._qr_source_image is None:
             return
-        width = max(1, self.qr_container.winfo_width())
-        height = max(1, self.qr_container.winfo_height())
-        size = max(140, min(width - 20, height - 20, 520))
-        if size == self._last_qr_size:
+        if not hasattr(self, "qr_canvas") or not self.qr_canvas.winfo_exists():
             return
-        self._last_qr_size = size
-        resampling = getattr(Image, "Resampling", Image).NEAREST
-        image = self._qr_source_image.resize((size, size), resampling)
-        self.qr_image_tk = ImageTk.PhotoImage(image)
-        self.qr_label.configure(image=self.qr_image_tk)
+
+        width = self.qr_canvas.winfo_width()
+        height = self.qr_canvas.winfo_height()
+        if width <= 2 or height <= 2:
+            self._schedule_qr_resize()
+            return
+
+        padding = 16
+        size = min(width - padding * 2, height - padding * 2)
+        if size < 1:
+            return
+
+        if size != self._last_qr_size:
+            self._last_qr_size = size
+            resampling = getattr(Image, "Resampling", Image).NEAREST
+            image = self._qr_source_image.resize((size, size), resampling)
+            self._qr_photo = ImageTk.PhotoImage(image)
+
+        self.qr_canvas.delete("qr")
+        if self._qr_photo is not None:
+            self.qr_canvas.create_image(
+                width // 2,
+                height // 2,
+                image=self._qr_photo,
+                anchor="center",
+                tags="qr",
+            )
 
     def show_qr_code(self) -> None:
         inventory_id, owner, name = self.evidence_entries[self.index]
@@ -454,7 +530,8 @@ class InventoryApp:
 
         self._qr_source_image = generate_qr_image(normalized_code)
         self._last_qr_size = 0
-        self._render_qr_for_current_size()
+        self._qr_photo = None
+        self._schedule_qr_resize()
 
         total_items = max(0, len(self.evidence_entries) - 1)
         if self.index == 0 and self.room_name:
