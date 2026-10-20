@@ -1,349 +1,491 @@
+from __future__ import annotations
+
 import csv
+import os
+import re
+import unicodedata
+from pathlib import Path
+
 import qrcode
 import tkinter as tk
-from tkinter import messagebox
-from tkinter import ttk
 from PIL import Image, ImageTk
-import os
-import unicodedata
+from tkinter import messagebox, ttk
+from tkinter import font as tkfont
 
-removeCZChars = True
+APP_TITLE = "Inventarizace – QR"
+GENERIC_PARENT_DIRS = {"rooms", "room", "out", "inv", "inventory", "inventarizace"}
 
-# Function to load data from CSV
-def load_data(csv_file):
-    evidence_entries = []
-    room_name = ""
+
+def clean(value: str | None) -> str:
+    return (value or "").replace("\ufeff", "").strip()
+
+
+def normalize_room(value: str) -> str:
+    parts = [part.strip() for part in clean(value).replace("\\", "/").split("/") if part.strip()]
+    return "/".join(parts)
+
+
+def remove_accents(input_str: str) -> str:
+    nfkd_form = unicodedata.normalize("NFKD", input_str)
+    return "".join(char for char in nfkd_form if not unicodedata.combining(char))
+
+
+def infer_room_from_path(room: str, csv_file: str | os.PathLike[str]) -> str:
+    room = normalize_room(room)
+    if not room or "/" in room:
+        return room
+
+    path = Path(csv_file)
+    parent = clean(path.parent.name)
+    parser_output_path = any(ancestor.name.casefold() in {"rooms", "names"} for ancestor in path.parents)
+    if (
+        parser_output_path
+        and parent
+        and parent.casefold() not in GENERIC_PARENT_DIRS
+        and parent != room
+        and re.fullmatch(r"[A-Za-z0-9._-]+", parent)
+    ):
+        return f"{parent}/{room}"
+
+    stem = path.stem
+    prefix = "evidencni_cisla_"
+    if stem.casefold().startswith(prefix):
+        suffix = stem[len(prefix):]
+        room_suffix = "_" + room.replace("/", "_")
+        if suffix.endswith(room_suffix):
+            building = suffix[: -len(room_suffix)].strip("_")
+            if building:
+                return normalize_room(f"{building}/{room}")
+
+    return room
+
+
+def read_csv_rows(csv_file: str | os.PathLike[str]) -> list[list[str]]:
+    with open(csv_file, newline="", encoding="utf-8-sig") as csvfile:
+        sample = csvfile.read(4096)
+        csvfile.seek(0)
+        delimiter = ";"
+        try:
+            delimiter = csv.Sniffer().sniff(sample, delimiters=";,\t,").delimiter
+        except csv.Error:
+            pass
+        return list(csv.reader(csvfile, delimiter=delimiter))
+
+
+def looks_like_item_header(row: list[str]) -> bool:
+    if not row:
+        return False
+    first = remove_accents(clean(row[0])).casefold()
+    return first.startswith(("inventarizacni cislo", "inventarni cislo", "evidencni cislo"))
+
+
+def load_data(csv_file: str | os.PathLike[str]) -> tuple[str, list[tuple[str, str, str]]]:
+    evidence_entries: list[tuple[str, str, str]] = []
     try:
-        with open(csv_file, newline='', encoding='utf-8') as csvfile:
-            reader = csv.reader(csvfile, delimiter=';')
-            room_name = next(reader)[0].strip()  # First line contains the room name
-            evidence_entries.append((room_name, room_name, room_name))  # Add room as its own QR entry
-            for row in reader:
-                try:
-                    # Parse three values: Inventarizační číslo, Owner, Name
-                    inventarizacni_cislo = row[0].strip()
-                    owner = row[1].strip()
-                    name = row[2].strip()
-                    evidence_entries.append((inventarizacni_cislo, owner, name))
-                except IndexError:
-                    continue  # Skip malformed rows
-    except Exception as e:
-        messagebox.showerror("Error", f"Failed to load data from {csv_file}:\n{str(e)}")
-    return room_name, evidence_entries
+        rows = read_csv_rows(csv_file)
+        first_index = next(
+            (index for index, row in enumerate(rows) if row and any(clean(value) for value in row)),
+            None,
+        )
+        if first_index is None:
+            return "", []
 
-# Function to generate QR code
-def generate_qr_image(content):
-    qr = qrcode.make(content)
-    return qr
+        first_row = rows[first_index]
+        room_name = normalize_room(first_row[0] if first_row else "")
+        if len(first_row) > 1:
+            description = clean(first_row[1])
+            if ":" in description and remove_accents(description).casefold().startswith("mistnost:"):
+                described_room = normalize_room(description.split(":", 1)[1])
+                if described_room and (not room_name or ("/" in described_room and "/" not in room_name)):
+                    room_name = described_room
 
-def remove_accents(input_str):
-    """
-    Remove accents from a string.
-    """
-    nfkd_form = unicodedata.normalize('NFKD', input_str)
-    return ''.join([char for char in nfkd_form if not unicodedata.combining(char)])
+        room_name = infer_room_from_path(room_name, csv_file)
+        if room_name:
+            evidence_entries.append((room_name, "", f"Místnost: {room_name}"))
 
-# Main application class
+        seen: set[str] = set()
+        for row in rows[first_index + 1:]:
+            if not row or all(not clean(value) for value in row) or looks_like_item_header(row):
+                continue
+            inventory_id = clean(row[0]) if row else ""
+            if not inventory_id:
+                continue
+            key = inventory_id.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            owner = clean(row[1]) if len(row) > 1 else ""
+            name = clean(row[2]) if len(row) > 2 else ""
+            evidence_entries.append((inventory_id, owner, name))
+
+        return room_name, evidence_entries
+    except Exception as exc:
+        messagebox.showerror("Chyba", f"Soubor se nepodařilo načíst:\n{csv_file}\n\n{exc}")
+        return "", []
+
+
+def generate_qr_image(content: str) -> Image.Image:
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=10,
+        border=4,
+    )
+    qr.add_data(content)
+    qr.make(fit=True)
+    return qr.make_image(fill_color="black", back_color="white").convert("RGB")
+
+
 class InventoryApp:
-    def __init__(self, root):
+    def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Inventory QR Code Viewer")
-        self.root.geometry("800x700")
-        self.root.minsize(600, 600)
+        self.root.title(APP_TITLE)
+        self.root.geometry("900x720")
+        self.root.minsize(520, 480)
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
 
-        # Set dark theme
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure("TFrame", background="#2d2d2d")
-        style.configure("TLabel", background="#2d2d2d", foreground="#ffffff")
-        style.configure("TButton", background="#3e3e3e", foreground="#ffffff", font=("Arial", 10, "bold"), padding=5)
-        style.map("TButton", background=[("active", "#4f4f4f")])
+        self.program_root = Path.cwd().resolve()
+        self.current_path = self.program_root
+        self.entries: list[str] = []
+        self.displayed_entries: list[str] = []
+        self.topmost_var = tk.BooleanVar(value=False)
+        self.search_var = tk.StringVar(value="")
+        self._search_trace = None
+        self._resize_after_id: str | None = None
+        self._qr_source_image: Image.Image | None = None
+        self._last_qr_size = 0
 
-        # Current folder path
-        self.current_path = os.getcwd()  # Start in the root directory
-        self.program_root = self.current_path  # Set program root directory
-
-        # Initialize views
+        self._configure_styles()
         self.file_selection_view()
 
-    def clear_view(self):
+    def _configure_styles(self) -> None:
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        background = "#252525"
+        panel = "#303030"
+        foreground = "#f5f5f5"
+        muted = "#bdbdbd"
+
+        self.root.configure(background=background)
+        style.configure("TFrame", background=background)
+        style.configure("Panel.TFrame", background=panel)
+        style.configure("TLabel", background=background, foreground=foreground)
+        style.configure("Muted.TLabel", background=background, foreground=muted)
+        style.configure("Title.TLabel", background=background, foreground=foreground, font=("TkDefaultFont", 17, "bold"))
+        style.configure("Code.TLabel", background=background, foreground=foreground, font=("TkDefaultFont", 16, "bold"))
+        style.configure("TButton", padding=(10, 7))
+        style.configure("TCheckbutton", background=background, foreground=foreground)
+        style.map("TCheckbutton", background=[("active", background)])
+
+        default_font = tkfont.nametofont("TkDefaultFont")
+        default_font.configure(size=max(default_font.cget("size"), 10))
+
+    def _clear_shortcuts(self) -> None:
+        for sequence in ("<Left>", "<Right>", "<Escape>", "<Return>"):
+            self.root.unbind(sequence)
+
+    def clear_view(self) -> None:
+        self._clear_shortcuts()
+        if self._resize_after_id is not None:
+            try:
+                self.root.after_cancel(self._resize_after_id)
+            except tk.TclError:
+                pass
+            self._resize_after_id = None
+        if self._search_trace is not None:
+            try:
+                self.search_var.trace_remove("write", self._search_trace)
+            except tk.TclError:
+                pass
+            self._search_trace = None
         for widget in self.root.winfo_children():
             widget.destroy()
 
-    def file_selection_view(self):
+    def _toggle_topmost(self) -> None:
+        self.root.attributes("-topmost", bool(self.topmost_var.get()))
+
+    def _add_header(self, parent: ttk.Frame, title: str, subtitle: str = "") -> ttk.Frame:
+        header = ttk.Frame(parent)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.columnconfigure(0, weight=1)
+
+        ttk.Label(header, text=title, style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        if subtitle:
+            ttk.Label(header, text=subtitle, style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(2, 0))
+
+        ttk.Checkbutton(
+            header,
+            text="Vždy navrchu",
+            variable=self.topmost_var,
+            command=self._toggle_topmost,
+        ).grid(row=0, column=1, rowspan=2, sticky="e", padx=(12, 0))
+        return header
+
+    def file_selection_view(self) -> None:
         self.clear_view()
 
-        # Main frame
-        main_frame = ttk.Frame(self.root, padding=10)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        main_frame = ttk.Frame(self.root, padding=16)
+        main_frame.grid(row=0, column=0, sticky="nsew")
+        main_frame.columnconfigure(0, weight=1)
+        main_frame.rowconfigure(3, weight=1)
 
-        # Current path label
-        relative_path = os.path.relpath(self.current_path, self.program_root)
-        self.current_path_label = ttk.Label(main_frame, text=f"Current Path: {relative_path}", font=("Arial", 12, "italic"))
-        self.current_path_label.pack(pady=5, anchor="w")
+        relative = os.path.relpath(self.current_path, self.program_root)
+        shown_path = "kořen" if relative == "." else relative
+        self._add_header(main_frame, "Výběr místnosti / CSV", f"Umístění: {shown_path}")
 
-        # Title label
-        ttk.Label(main_frame, text="Select a CSV File", font=("Arial", 16)).pack(pady=10, anchor="w")
-
-        # Search bar frame
         search_frame = ttk.Frame(main_frame)
-        search_frame.pack(fill=tk.X, pady=5)
-        ttk.Label(search_frame, text="Search: ").pack(side=tk.LEFT, padx=5)
-
-        self.search_var = tk.StringVar()  # Variable to store search input
+        search_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        search_frame.columnconfigure(1, weight=1)
+        ttk.Label(search_frame, text="Hledat:").grid(row=0, column=0, padx=(0, 8))
         self.search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
-        self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-        self.search_entry.configure(state="disabled")  # Initially disabled to avoid direct focus
+        self.search_entry.grid(row=0, column=1, sticky="ew")
+        ttk.Button(search_frame, text="Vymazat", command=lambda: self.search_var.set("")).grid(row=0, column=2, padx=(8, 0))
 
-        ttk.Button(search_frame, text="Search", command=self.perform_search).pack(side=tk.LEFT, padx=5)
+        self.status_label = ttk.Label(main_frame, text="", style="Muted.TLabel")
+        self.status_label.grid(row=2, column=0, sticky="w", pady=(0, 5))
 
-        # Listbox with scrollbar
         listbox_frame = ttk.Frame(main_frame)
-        listbox_frame.pack(fill=tk.BOTH, expand=True, pady=10)
-        self.file_listbox = tk.Listbox(listbox_frame, font=("Arial", 12), activestyle="none", bg="#3e3e3e", fg="#ffffff", selectbackground="#4f4f4f")
-        self.file_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        listbox_frame.grid(row=3, column=0, sticky="nsew")
+        listbox_frame.columnconfigure(0, weight=1)
+        listbox_frame.rowconfigure(0, weight=1)
 
+        self.file_listbox = tk.Listbox(
+            listbox_frame,
+            font=tkfont.nametofont("TkDefaultFont"),
+            activestyle="none",
+            bg="#303030",
+            fg="#f5f5f5",
+            selectbackground="#4b6985",
+            selectforeground="#ffffff",
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground="#444444",
+            exportselection=False,
+        )
+        self.file_listbox.grid(row=0, column=0, sticky="nsew")
         scrollbar = ttk.Scrollbar(listbox_frame, orient="vertical", command=self.file_listbox.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.file_listbox.config(yscrollcommand=scrollbar.set)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.file_listbox.configure(yscrollcommand=scrollbar.set)
 
-        # Populate listbox
-        self.refresh_file_list()
+        self.file_listbox.bind("<Return>", lambda _event: self.open_file())
+        self.file_listbox.bind("<Double-1>", lambda _event: self.open_file())
+        self.file_listbox.bind("<Key>", self._listbox_type_to_search)
+        self.file_listbox.bind("<BackSpace>", self._listbox_backspace)
 
-        # Bind keys for search, navigation, and going back
-        self.file_listbox.bind("<Key>", self.listbox_keypress)  # Capture alphanumeric keys for search
-        self.file_listbox.bind("<BackSpace>", self.delete_from_search)  # Handle Backspace for deleting search
-        self.file_listbox.bind("<Up>", lambda event: self.navigate_listbox(-1))
-        self.file_listbox.bind("<Down>", lambda event: self.navigate_listbox(1))
-        self.file_listbox.bind("<Return>", lambda event: self.open_file())  # Open selected item
-        self.file_listbox.bind("<Escape>", lambda event: self.go_back())  # Go back in directories
-        self.file_listbox.bind("<Double-1>", lambda event: self.open_selected_file())  # Fix for double-click to open
+        buttons = ttk.Frame(main_frame)
+        buttons.grid(row=4, column=0, sticky="ew", pady=(12, 0))
+        for column in range(3):
+            buttons.columnconfigure(column, weight=1)
+        ttk.Button(buttons, text="← O úroveň výš", command=self.go_back).grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        ttk.Button(buttons, text="Obnovit", command=self.refresh_file_list).grid(row=0, column=1, sticky="ew", padx=5)
+        ttk.Button(buttons, text="Otevřít", command=self.open_file).grid(row=0, column=2, sticky="ew", padx=(5, 0))
 
-        # Buttons (Centered)
-        button_frame = ttk.Frame(main_frame)
-        button_frame.pack(fill=tk.BOTH, expand=True, pady=10)
-        button_frame.columnconfigure(0, weight=1)
+        self._search_trace = self.search_var.trace_add("write", lambda *_args: self.perform_search())
+        self.root.bind("<Escape>", lambda _event: self.go_back())
+        self.root.bind("<Return>", lambda _event: self.open_file())
 
-        ttk.Button(button_frame, text="Go Back", command=self.go_back).grid(row=0, column=0, padx=10, pady=5, sticky="ew")
-        ttk.Button(button_frame, text="Refresh", command=self.refresh_file_list).grid(row=1, column=0, padx=10, pady=5, sticky="ew")
-        ttk.Button(button_frame, text="Open", command=self.open_file).grid(row=2, column=0, padx=10, pady=5, sticky="ew")
-
-        # Set initial focus to Listbox
+        self.refresh_file_list(reset_search=True)
         self.file_listbox.focus_set()
 
-    def listbox_keypress(self, event):
-        """
-        Handle keypress in the Listbox. If alphanumeric key, update the search bar and perform search.
-        """
-        if event.char.isprintable():  # Check if the key is printable (e.g., letter or number)
-            # Enable search entry temporarily to update its value
-            self.search_entry.configure(state="normal")
-            self.search_var.set(self.search_var.get() + event.char)  # Append the key to search bar
-            self.search_entry.configure(state="disabled")  # Disable it back for focus consistency
-            self.perform_search()  # Perform search based on updated search query
+    def _listbox_type_to_search(self, event: tk.Event) -> str | None:
+        if event.keysym in {"Up", "Down", "Left", "Right", "Return", "Escape", "BackSpace", "Delete", "Home", "End", "Prior", "Next"}:
+            return None
+        if event.char and event.char.isprintable():
+            self.search_var.set(self.search_var.get() + event.char)
+            return "break"
+        return None
 
+    def _listbox_backspace(self, _event: tk.Event) -> str:
+        if self.search_var.get():
+            self.search_var.set(self.search_var.get()[:-1])
+        return "break"
 
-    def delete_from_search(self, event):
-        """
-        Handle Backspace in the Listbox to delete characters from the search bar.
-        """
-        if self.search_var.get():  # Ensure there's something to delete
-            # Enable search entry temporarily to update its value
-            self.search_entry.configure(state="normal")
-            self.search_var.set(self.search_var.get()[:-1])  # Remove the last character
-            self.search_entry.configure(state="disabled")  # Disable it back for focus consistency
-            self.perform_search()  # Perform search based on updated search query
+    def perform_search(self) -> None:
+        if not hasattr(self, "file_listbox") or not self.file_listbox.winfo_exists():
+            return
+        query = self.search_var.get().strip().casefold()
+        self.displayed_entries = [entry for entry in self.entries if query in entry.casefold()]
 
-
-    def navigate_listbox(self, direction):
-        """
-        Navigate the Listbox using the arrow keys, moving by one item at a time.
-        """
-        selected = self.file_listbox.curselection()
-        if selected:
-            new_index = max(0, min(selected[0] + direction, self.file_listbox.size() - 1))
-        else:
-            new_index = 0  # If no item is selected, default to the first item
-
-        self.file_listbox.selection_clear(0, tk.END)
-        self.file_listbox.selection_set(new_index)
-        self.file_listbox.activate(new_index)
-        self.file_listbox.see(new_index)  # Ensure the item is visible
-
-        return "break"  # Prevent default Listbox behavior
-
-    def perform_search(self):
-        """
-        Filter the entries in the Listbox based on the search query.
-        """
-        query = self.search_var.get().lower()  # Get search input and make it case-insensitive
-        filtered_entries = [entry for entry in self.entries if query in entry.lower()]  # Filter entries
-
-        # Update the Listbox with filtered entries
         self.file_listbox.delete(0, tk.END)
-        if not filtered_entries:
-            self.file_listbox.insert(tk.END, "No matching entries found.")
-        else:
-            for entry in filtered_entries:
-                self.file_listbox.insert(tk.END, entry)
+        for entry in self.displayed_entries:
+            full_path = self.current_path / entry
+            prefix = "📁 " if full_path.is_dir() else "📄 "
+            self.file_listbox.insert(tk.END, prefix + entry)
 
-    def refresh_file_list(self):
-        """
-        Refresh the file list and reset search.
-        """
-        self.search_var.set("")  # Reset search field
-        self.file_listbox.delete(0, tk.END)
+        if self.displayed_entries:
+            self.file_listbox.selection_set(0)
+            self.file_listbox.activate(0)
+        self.status_label.configure(text=f"Zobrazeno: {len(self.displayed_entries)} / {len(self.entries)}")
+
+    def refresh_file_list(self, reset_search: bool = False) -> None:
+        if reset_search:
+            self.search_var.set("")
         try:
-            entries = os.listdir(self.current_path)
-            # Separate folders and files, then sort each group
-            folders = sorted([entry for entry in entries if os.path.isdir(os.path.join(self.current_path, entry)) and entry != "venv" and not entry.startswith('.')])
-            files = sorted([entry for entry in entries if entry.endswith('.csv') and not entry.startswith('.')])
-
-            # Combine sorted folders and files
+            entries = list(self.current_path.iterdir())
+            folders = sorted(
+                [
+                    entry.name
+                    for entry in entries
+                    if entry.is_dir() and entry.name != "venv" and not entry.name.startswith(".")
+                ],
+                key=str.casefold,
+            )
+            files = sorted(
+                [entry.name for entry in entries if entry.is_file() and entry.suffix.casefold() == ".csv" and not entry.name.startswith(".")],
+                key=str.casefold,
+            )
             self.entries = folders + files
+            self.perform_search()
+        except OSError as exc:
+            messagebox.showerror("Chyba", f"Obsah složky se nepodařilo načíst:\n{exc}")
 
-            if not self.entries:
-                messagebox.showwarning("No Files", "No folders or CSV files found in the current directory.")
-            else:
-                for entry in self.entries:
-                    self.file_listbox.insert(tk.END, entry)
-                # Auto-select the first entry and set focus
-                self.file_listbox.selection_set(0)
-                self.file_listbox.focus_set()
-
-            # Update current path label with relative path
-            relative_path = os.path.relpath(self.current_path, self.program_root)
-            self.current_path_label.config(text=f"Current Path: {relative_path}")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to load entries:\n{str(e)}")
-
-    def open_selected_file(self):
-        """
-        Handle double-click to open the selected file or folder.
-        """
-        selected_index = self.file_listbox.curselection()
-        if selected_index:
-            self.open_file()  # Reuse the open_file method for consistent behavior
-
-    def open_file(self):
-        """
-        Open a selected file or folder and reset search.
-        """
-        selected_index = self.file_listbox.curselection()
-        if not selected_index:
-            messagebox.showwarning("No Selection", "Please select a file or folder.")
+    def open_file(self) -> None:
+        selected = self.file_listbox.curselection()
+        if not selected or not self.displayed_entries:
+            return
+        index = selected[0]
+        if index >= len(self.displayed_entries):
             return
 
-        selected_entry = self.entries[selected_index[0]]
-        selected_path = os.path.join(self.current_path, selected_entry)
+        selected_entry = self.displayed_entries[index]
+        selected_path = self.current_path / selected_entry
 
-        self.search_var.set("")  # Reset search field on navigation
+        if selected_path.is_dir():
+            self.current_path = selected_path.resolve()
+            self.search_var.set("")
+            self.file_selection_view()
+            return
 
-        if os.path.isdir(selected_path):
-            # Navigate into the folder
-            self.current_path = selected_path
-            self.refresh_file_list()
-        elif selected_path.endswith('.csv'):
-            # Load and display the CSV file
-            room_name, evidence_entries = load_data(selected_path)
-            if evidence_entries:
-                self.qr_code_viewer(room_name, evidence_entries)
+        if selected_path.suffix.casefold() != ".csv":
+            return
+
+        room_name, evidence_entries = load_data(selected_path)
+        if evidence_entries:
+            self.qr_code_viewer(room_name, evidence_entries)
         else:
-            messagebox.showerror("Invalid Selection", "Please select a valid folder or CSV file.")
+            messagebox.showwarning("Prázdný soubor", "V CSV nebyly nalezeny žádné použitelné položky.")
 
-    def qr_code_viewer(self, room_name, evidence_entries):
+    def qr_code_viewer(self, room_name: str, evidence_entries: list[tuple[str, str, str]]) -> None:
         self.clear_view()
         self.room_name = room_name
         self.evidence_entries = evidence_entries
         self.index = 0
-    
-        # Main frame
-        main_frame = ttk.Frame(self.root, padding=10)
-        main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # QR code position and room name display (Centered)
-        self.position_label = ttk.Label(main_frame, text="", font=("Arial", 12))
-        self.position_label.pack(pady=5)
+        main_frame = ttk.Frame(self.root, padding=16)
+        main_frame.grid(row=0, column=0, sticky="nsew")
+        main_frame.columnconfigure(0, weight=1)
+        main_frame.rowconfigure(3, weight=1)
 
-        # Inventarizační číslo display (Centered)
-        self.label_code = ttk.Label(main_frame, text="", font=("Arial", 14, "bold"), anchor="center")
-        self.label_code.pack(pady=5)
+        self._add_header(main_frame, "QR inventarizace", room_name or "Neznámá místnost")
 
-        # QR code display (Centered)
-        self.qr_label = ttk.Label(main_frame)
-        self.qr_label.pack(pady=10)
+        self.position_label = ttk.Label(main_frame, text="", style="Muted.TLabel", anchor="center")
+        self.position_label.grid(row=1, column=0, sticky="ew", pady=(0, 5))
 
-        # Owner and Name display (Centered)
-        self.label_owner = ttk.Label(main_frame, text="", font=("Arial", 12), anchor="center")
-        self.label_owner.pack(pady=5)
+        self.label_code = ttk.Label(main_frame, text="", style="Code.TLabel", anchor="center")
+        self.label_code.grid(row=2, column=0, sticky="ew", pady=(0, 8))
 
-        self.label_name = ttk.Label(main_frame, text="", font=("Arial", 12, "italic"), anchor="center")
-        self.label_name.pack(pady=5)
+        self.qr_container = ttk.Frame(main_frame)
+        self.qr_container.grid(row=3, column=0, sticky="nsew")
+        self.qr_container.columnconfigure(0, weight=1)
+        self.qr_container.rowconfigure(0, weight=1)
+        self.qr_label = ttk.Label(self.qr_container, anchor="center")
+        self.qr_label.grid(row=0, column=0, sticky="nsew")
 
-        # Buttons (Centered)
-        button_frame = ttk.Frame(main_frame)
-        button_frame.pack(fill=tk.BOTH, expand=True, pady=10)
-        button_frame.columnconfigure(0, weight=1)
+        details = ttk.Frame(main_frame)
+        details.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+        details.columnconfigure(0, weight=1)
+        self.label_owner = ttk.Label(details, text="", anchor="center", justify="center")
+        self.label_owner.grid(row=0, column=0, sticky="ew")
+        self.label_name = ttk.Label(details, text="", anchor="center", justify="center", style="Muted.TLabel")
+        self.label_name.grid(row=1, column=0, sticky="ew", pady=(3, 0))
 
-        ttk.Button(button_frame, text="Back", command=self.show_previous).grid(row=0, column=0, padx=10, pady=5, sticky="ew")
-        ttk.Button(button_frame, text="Menu", command=self.file_selection_view).grid(row=1, column=0, padx=10, pady=5, sticky="ew")
-        ttk.Button(button_frame, text="Next", command=self.show_next).grid(row=2, column=0, padx=10, pady=5, sticky="ew")
+        buttons = ttk.Frame(main_frame)
+        buttons.grid(row=5, column=0, sticky="ew", pady=(12, 0))
+        for column in range(3):
+            buttons.columnconfigure(column, weight=1)
+        ttk.Button(buttons, text="← Předchozí", command=self.show_previous).grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        ttk.Button(buttons, text="Menu", command=self.file_selection_view).grid(row=0, column=1, sticky="ew", padx=5)
+        ttk.Button(buttons, text="Další →", command=self.show_next).grid(row=0, column=2, sticky="ew", padx=(5, 0))
 
-        # Bind keys for navigation and menu
-        self.root.bind("<Right>", lambda event: self.show_next())
-        self.root.bind("<Left>", lambda event: self.show_previous())
-        self.root.bind("<Escape>", lambda event: self.file_selection_view())
+        self.root.bind("<Right>", lambda _event: self.show_next())
+        self.root.bind("<Left>", lambda _event: self.show_previous())
+        self.root.bind("<Escape>", lambda _event: self.file_selection_view())
+        main_frame.bind("<Configure>", self._schedule_qr_resize)
 
         self.show_qr_code()
 
-    def show_qr_code(self):
-        """
-        Display the current QR code, owner, and name.
-        """
-        inventarizacni_cislo, owner, name = self.evidence_entries[self.index]
+    def _schedule_qr_resize(self, event: tk.Event) -> None:
+        wrap = max(220, event.width - 50)
+        self.label_owner.configure(wraplength=wrap)
+        self.label_name.configure(wraplength=wrap)
+        if self._resize_after_id is not None:
+            try:
+                self.root.after_cancel(self._resize_after_id)
+            except tk.TclError:
+                pass
+        self._resize_after_id = self.root.after(40, self._render_qr_for_current_size)
 
-        # Remove accents from Inventarizační číslo
-        normalized_code = remove_accents(inventarizacni_cislo)
-        
-        # Update labels with normalized data
-        self.label_code.config(text=f"{normalized_code}")
-        self.label_owner.config(text=f"{owner}")
-        self.label_name.config(text=f"{name}")
+    def _render_qr_for_current_size(self) -> None:
+        self._resize_after_id = None
+        if self._qr_source_image is None or not self.qr_label.winfo_exists():
+            return
+        width = max(1, self.qr_container.winfo_width())
+        height = max(1, self.qr_container.winfo_height())
+        size = max(140, min(width - 20, height - 20, 520))
+        if size == self._last_qr_size:
+            return
+        self._last_qr_size = size
+        resampling = getattr(Image, "Resampling", Image).NEAREST
+        image = self._qr_source_image.resize((size, size), resampling)
+        self.qr_image_tk = ImageTk.PhotoImage(image)
+        self.qr_label.configure(image=self.qr_image_tk)
 
-        # Generate QR code with normalized data
-        qr_image = generate_qr_image(normalized_code).resize((300, 300))
-        self.qr_image_tk = ImageTk.PhotoImage(qr_image)
-        self.qr_label.config(image=self.qr_image_tk)
+    def show_qr_code(self) -> None:
+        inventory_id, owner, name = self.evidence_entries[self.index]
+        normalized_code = remove_accents(inventory_id)
 
-        # Update position label with room name and counter (starting from 0)
-        self.position_label.config(
-            text=f"{self.room_name} - {self.index}/{len(self.evidence_entries) - 1}"
-        )
+        self.label_code.configure(text=normalized_code)
+        self.label_owner.configure(text=owner)
+        self.label_name.configure(text=name)
 
-    def show_next(self):
+        self._qr_source_image = generate_qr_image(normalized_code)
+        self._last_qr_size = 0
+        self._render_qr_for_current_size()
+
+        total_items = max(0, len(self.evidence_entries) - 1)
+        if self.index == 0 and self.room_name:
+            self.position_label.configure(text=f"Místnost • {self.room_name} • {total_items} položek")
+        else:
+            self.position_label.configure(text=f"{self.room_name} • {self.index}/{total_items}")
+
+    def show_next(self) -> None:
         if self.index < len(self.evidence_entries) - 1:
             self.index += 1
             self.show_qr_code()
 
-    def show_previous(self):
+    def show_previous(self) -> None:
         if self.index > 0:
             self.index -= 1
             self.show_qr_code()
-    
-    def go_back(self):
-        """
-        Go back to the parent directory and reset search.
-        """
-        if hasattr(self, "program_root") and self.current_path != self.program_root:
-            self.current_path = os.path.dirname(self.current_path)
-            self.search_var.set("")  # Reset search field on navigation
-            self.refresh_file_list()
 
-# Run the application
+    def go_back(self) -> None:
+        if self.current_path != self.program_root:
+            try:
+                self.current_path.relative_to(self.program_root)
+            except ValueError:
+                self.current_path = self.program_root
+            else:
+                self.current_path = self.current_path.parent
+            self.search_var.set("")
+            self.file_selection_view()
+
+
 if __name__ == "__main__":
     root = tk.Tk()
-    root.attributes('-topmost', True)  # Bring the window to the top
-    root.focus_force()  # Force focus on the window
-    app = InventoryApp(root)
-    app.program_root = os.getcwd()  # Set the root directory here
+    InventoryApp(root)
     root.mainloop()
