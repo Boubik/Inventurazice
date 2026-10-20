@@ -87,29 +87,85 @@ def is_placeholder_location(value: str) -> bool:
     return not folded or folded == "lokalita" or folded.startswith("lokalita:")
 
 
+def room_specificity(room: str) -> tuple[int, int]:
+    room = normalize_room(room)
+    return (room.count("/"), len(room))
+
+
+def compatible_rooms(a: str, b: str) -> bool:
+    a = normalize_room(a)
+    b = normalize_room(b)
+    if not a or not b:
+        return True
+    if a.casefold() == b.casefold():
+        return True
+    return a.casefold().endswith("/" + b.casefold()) or b.casefold().endswith("/" + a.casefold())
+
+
+def resolve_row_room(fallback_room: str, row_room: str) -> str:
+    """Prefer an explicit per-row room over the file-level search/header room.
+
+    If one value is only a short alias of the other (7.06 vs 64/7.06), keep
+    the more specific fully-qualified location.
+    """
+    fallback_room = normalize_room(fallback_room)
+    row_room = normalize_room(row_room)
+
+    if not row_room:
+        return fallback_room
+    if not fallback_room:
+        return row_room
+    if compatible_rooms(fallback_room, row_room):
+        return max((fallback_room, row_room), key=room_specificity)
+    return row_room
+
+
 def parse_room_export(path: Path, rows: Sequence[Sequence[str]], stats: ImportStats) -> list[Record]:
+    """Parse browser room exports.
+
+    Old format:
+      inventory;owner;name
+
+    New format:
+      inventory;owner;name;full_location
+
+    The fourth column is optional and, when present, is authoritative for that
+    row. This allows one browser export to contain multiple full locations.
+    """
     if not rows:
         return []
 
-    room = normalize_room(rows[0][0] if rows[0] else "")
+    fallback_room = normalize_room(rows[0][0] if rows[0] else "")
     if len(rows[0]) > 1:
         description = clean(rows[0][1])
         if ":" in description and description.casefold().startswith(ROOM_HEADER_PREFIXES):
             described_room = normalize_room(description.split(":", 1)[1])
-            if described_room and (not room or ("/" in described_room and "/" not in room)):
-                room = described_room
+            if described_room and (
+                not fallback_room or room_specificity(described_room) > room_specificity(fallback_room)
+            ):
+                fallback_room = described_room
 
     records: list[Record] = []
     for row in rows[1:]:
         stats.rows_read += 1
         if not row or all(not clean(value) for value in row):
             continue
+
         inventory_id = clean(row[0]) if row else ""
         if not inventory_id:
             stats.rows_skipped += 1
             continue
+
         owner = clean(row[1]) if len(row) > 1 else ""
         name = clean(row[2]) if len(row) > 2 else ""
+        explicit_room = normalize_room(row[3]) if len(row) > 3 else ""
+        room = resolve_row_room(fallback_room, explicit_room)
+
+        if not room:
+            stats.rows_skipped += 1
+            print(f"[SKIP] {path}: inventory {inventory_id} has no room/location")
+            continue
+
         records.append(Record(inventory_id, name, owner, room, str(path)))
     return records
 
@@ -203,21 +259,6 @@ def parse_file_typed(path: Path, stats: ImportStats) -> ParsedFile:
 def parse_file(path: Path, stats: ImportStats) -> list[Record]:
     """Compatibility wrapper returning records regardless of input kind."""
     return parse_file_typed(path, stats).records
-
-
-def room_specificity(room: str) -> tuple[int, int]:
-    room = normalize_room(room)
-    return (room.count("/"), len(room))
-
-
-def compatible_rooms(a: str, b: str) -> bool:
-    a = normalize_room(a)
-    b = normalize_room(b)
-    if not a or not b:
-        return True
-    if a.casefold() == b.casefold():
-        return True
-    return a.casefold().endswith("/" + b.casefold()) or b.casefold().endswith("/" + a.casefold())
 
 
 def merge_duplicate(old: Record, new: Record, stats: ImportStats) -> Record:
