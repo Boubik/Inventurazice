@@ -1,68 +1,190 @@
 (function () {
-  // Find the document that actually contains the "zaznamy" table.
   function findDocumentWithTable() {
-    // Check current document first.
-    if (document.querySelector('table.zaznamy')) {
-      return document;
-    }
-    // Otherwise scan frames/iframes.
+    if (document.querySelector('table.zaznamy')) return document;
     for (const frame of document.querySelectorAll('frame, iframe')) {
-      let doc;
       try {
-        doc = frame.contentDocument || frame.contentWindow.document;
-      } catch (e) {
-        continue; // skip if cross‑origin
-      }
-      if (doc && doc.querySelector('table.zaznamy')) {
-          return doc;
+        const doc = frame.contentDocument || frame.contentWindow.document;
+        if (doc && doc.querySelector('table.zaznamy')) return doc;
+      } catch (_) {
+        // Ignore cross-origin frames.
       }
     }
-    return document; // fallback
+    return document;
+  }
+
+  function valueOf(element) {
+    if (!element) return '';
+    if (element.tagName === 'SELECT') {
+      const option = element.options[element.selectedIndex];
+      return (option && (option.value || option.textContent) || '').trim();
+    }
+    return (element.value || element.textContent || '').trim();
+  }
+
+  function normalizeRoom(value) {
+    return String(value || '')
+      .trim()
+      .replace(/\\/g, '/')
+      .replace(/^\s*(místnost|mistnost|lokalita|umístění|umisteni)\s*:\s*/i, '')
+      .trim();
+  }
+
+  function locationCode(value) {
+    const normalized = normalizeRoom(value);
+    if (!normalized) return '';
+    return normalized.split(/\s+/)[0];
+  }
+
+  function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  function findRoomCandidates(text, rawRoom) {
+    const room = normalizeRoom(rawRoom);
+    const result = new Set();
+    if (!text) return result;
+
+    if (room && !room.includes('/')) {
+      const pattern = new RegExp(
+        '(?:^|[^A-Za-z0-9._/-])([A-Za-z0-9._-]+/' + escapeRegExp(room) + ')(?=$|[^A-Za-z0-9._/-])',
+        'gm'
+      );
+      let match;
+      while ((match = pattern.exec(text)) !== null) result.add(normalizeRoom(match[1]));
+    }
+
+    const generic = /(?:^|[^A-Za-z0-9._/-])([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)(?=$|[^A-Za-z0-9._/-])/gm;
+    let match;
+    while ((match = generic.exec(text)) !== null) result.add(normalizeRoom(match[1]));
+
+    return result;
+  }
+
+  function findFullRoom(doc, rawRoom) {
+    const room = normalizeRoom(rawRoom);
+    if (!room || room.includes('/')) return room;
+
+    const bodyText = doc.body ? doc.body.innerText : '';
+    const matches = findRoomCandidates(bodyText, room);
+    const matching = Array.from(matches).filter(candidate => candidate.endsWith('/' + room));
+    if (matching.length === 1) return matching[0];
+
+    const selectors = [
+      '[name="budova"]', '[name="objekt"]', '[name="lokalita"]',
+      '[id*="budova" i]', '[id*="objekt" i]', '[id*="lokalita" i]'
+    ];
+    for (const selector of selectors) {
+      const candidate = locationCode(valueOf(doc.querySelector(selector)));
+      if (!candidate) continue;
+      if (candidate.includes('/') && candidate.endsWith('/' + room)) return candidate;
+      if (/^[A-Za-z0-9._-]+$/.test(candidate) && candidate !== room) return candidate + '/' + room;
+    }
+
+    return room;
+  }
+
+  function normalizeHeader(value) {
+    return String(value || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim()
+      .toLowerCase();
+  }
+
+  function findColumnIndex(table, names) {
+    const headerRows = table.querySelectorAll('tr');
+    for (const row of headerRows) {
+      const headers = Array.from(row.querySelectorAll('th'));
+      if (!headers.length) continue;
+      for (let i = 0; i < headers.length; i++) {
+        const text = normalizeHeader(headers[i].innerText || headers[i].textContent);
+        if (names.some(name => text.includes(name))) return i;
+      }
+    }
+    return -1;
+  }
+
+  function rowRoom(row, cells, locationIndex, rawRoom, fallbackRoom) {
+    if (locationIndex >= 0 && locationIndex < cells.length) {
+      const fromColumn = locationCode(cells[locationIndex].innerText || cells[locationIndex].textContent);
+      if (fromColumn) {
+        if (fromColumn.includes('/')) return fromColumn;
+        if (fallbackRoom && fallbackRoom.endsWith('/' + fromColumn)) return fallbackRoom;
+      }
+    }
+
+    const rowText = row.innerText || row.textContent || '';
+    const candidates = Array.from(findRoomCandidates(rowText, rawRoom));
+    if (rawRoom) {
+      const normalizedRaw = normalizeRoom(rawRoom);
+      const matching = candidates.filter(candidate =>
+        candidate === normalizedRaw || candidate.endsWith('/' + normalizedRaw)
+      );
+      if (matching.length === 1) return matching[0];
+    }
+    if (candidates.length === 1) return candidates[0];
+
+    return fallbackRoom;
+  }
+
+  function csvCell(value) {
+    const text = String(value == null ? '' : value);
+    if (/[;"\r\n]/.test(text)) return '"' + text.replace(/"/g, '""') + '"';
+    return text;
   }
 
   const doc = findDocumentWithTable();
-  const data = [];
-
-  // Retrieve the room value if present.
-  const roomInput = doc.querySelector('input[name="mistnost"]');
-  const roomValue = roomInput && roomInput.value ? roomInput.value.trim() : '';
-  if (roomValue) {
-    data.push([roomValue, `Místnost: ${roomValue};`]);
-  }
-
-  // Locate the table containing the asset records.
   const table = doc.querySelector('table.zaznamy');
   if (!table) {
     console.error('Table with class "zaznamy" not found.');
     return;
   }
 
-  // Extract data from rows that have at least 5 <td> elements.
+  const roomControl = doc.querySelector('input[name="mistnost"], select[name="mistnost"], [name="mistnost"]');
+  const rawRoom = normalizeRoom(valueOf(roomControl));
+  const fallbackRoom = findFullRoom(doc, rawRoom);
+
+  const locationIndex = findColumnIndex(table, ['mistnost', 'lokalita', 'umisteni']);
+  const dataRows = [];
+  const rooms = new Set();
+
   table.querySelectorAll('tr').forEach(row => {
-    const cells = row.querySelectorAll('td');
+    const cells = Array.from(row.querySelectorAll('td'));
     if (cells.length > 4) {
-      const osoba = cells[2].innerText.trim();
-      const evidencni = cells[3].innerText.trim();
-      const nazev = cells[4].innerText.trim();
+      const osoba = (cells[2].innerText || cells[2].textContent || '').trim();
+      const evidencni = (cells[3].innerText || cells[3].textContent || '').trim();
+      const nazev = (cells[4].innerText || cells[4].textContent || '').trim();
+      const mistnost = locationCode(rowRoom(row, cells, locationIndex, rawRoom, fallbackRoom));
+
       if (evidencni && osoba && nazev) {
-        data.push([evidencni, osoba, nazev]);
+        if (mistnost) rooms.add(mistnost);
+        dataRows.push([evidencni, osoba, nazev, mistnost]);
       }
     }
   });
 
-  console.log('Data found:', data);
-
-  if (!data.length) {
+  if (!dataRows.length) {
     console.log('No data entries found.');
     return;
   }
 
-  // Create CSV and trigger download.
-  const csvContent = data.map(row => row.join(';')).join('\n');
+  let headerRoom = fallbackRoom;
+  if (rooms.size === 1) headerRoom = Array.from(rooms)[0];
+  if (rooms.size > 1) headerRoom = rawRoom || 'vice_mistnosti';
+
+  const data = [];
+  if (headerRoom) data.push([headerRoom, `Místnost: ${headerRoom}`, '', '']);
+  data.push(...dataRows);
+
+  const csvContent = data.map(row => row.map(csvCell).join(';')).join('\n');
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-  const fileName = `evidencni_cisla_${roomValue || 'vse'}.csv`.replace(/[^a-zA-Z0-9._-]/g, '_');
+
+  const fileRoom = rooms.size === 1
+    ? Array.from(rooms)[0]
+    : (rawRoom || 'vice_mistnosti');
+  const fileName = `evidencni_cisla_${fileRoom}.csv`.replace(/[^a-zA-Z0-9._-]/g, '_');
+
   if (navigator.msSaveBlob) {
-    // Support for IE
     navigator.msSaveBlob(blob, fileName);
   } else {
     const link = document.createElement('a');
@@ -73,4 +195,6 @@
     document.body.removeChild(link);
     URL.revokeObjectURL(link.href);
   }
+
+  console.log(`Exported ${dataRows.length} inventory rows across ${rooms.size || 1} room(s).`);
 })();
