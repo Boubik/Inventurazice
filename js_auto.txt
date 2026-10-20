@@ -1,32 +1,23 @@
 (async function () {
   'use strict';
 
-  // ============================================================
-  // CONFIGURATION
-  // ============================================================
   const CONFIG = {
-    // Building/object to export.
     buildingPrefix: '64/',
 
-    // SAFE TEST MODE:
-    // Keep this value for the first test. If it works, set it to '' and the
-    // script will automatically scan buildingPrefix by smaller prefixes.
-    testQuery: '64/5.29',
+    // Controlled first-level scan. Add another starting character here if a
+    // new named location appears in the building in the future.
+    initialChars: '-0123456789CR',
 
-    // The broad query "64/" is NEVER sent. Automatic mode starts directly
-    // with 64/0, 64/1, ..., 64/A, ... to avoid the >9000-record query.
-    initialChars: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-._',
-
-    // If one of the smaller prefixes is still too large, split it again.
+    // Used only if one of the controlled prefixes still returns >9000 rows.
     splitChars: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-._ ',
 
-    // Be gentle with IMIS: one request at a time and a pause between them.
-    delayMs: 800,
+    // One request at a time and a conservative pause between them.
+    delayMs: 1000,
     ajaxTimeoutMs: 120000,
 
-    // Safety limits.
+    // Hard safety limits.
     maxDepth: 7,
-    maxRequests: 300,
+    maxRequests: 150,
 
     roomFieldName: 'mistnost',
     outputFileName: 'evidencni_cisla_auto_64.csv',
@@ -50,9 +41,6 @@
       .trim();
   }
 
-  // IMIS displays values such as:
-  //   64/5.29 CPTO Pasteurova/5.29
-  // The real location code is only the first token.
   function locationCode(value) {
     const normalized = normalizeRoom(value);
     if (!normalized) return '';
@@ -90,28 +78,25 @@
   }
 
   function findImisDocument() {
-    for (const doc of getDocuments(document)) {
-      if (
-        doc.querySelector('#commonFiltersForm') &&
-        doc.querySelector('#tabs') &&
-        doc.querySelector(`[name="${CONFIG.roomFieldName}"]`)
-      ) {
-        return doc;
+    function findIn(root) {
+      for (const doc of getDocuments(root)) {
+        if (
+          doc.querySelector('#commonFiltersForm') &&
+          doc.querySelector('#tabs') &&
+          doc.querySelector(`[name="${CONFIG.roomFieldName}"]`)
+        ) {
+          return doc;
+        }
       }
+      return null;
     }
 
-    // When the console is opened in the outer frameset, also inspect top.
+    const local = findIn(document);
+    if (local) return local;
+
     try {
       if (top && top.document && top.document !== document) {
-        for (const doc of getDocuments(top.document)) {
-          if (
-            doc.querySelector('#commonFiltersForm') &&
-            doc.querySelector('#tabs') &&
-            doc.querySelector(`[name="${CONFIG.roomFieldName}"]`)
-          ) {
-            return doc;
-          }
-        }
+        return findIn(top.document);
       }
     } catch (_) {
       // Ignore cross-origin top frame.
@@ -131,7 +116,7 @@
     try {
       index = $('#tabs').tabs('option', 'active');
     } catch (_) {
-      // Fall back to DOM state below.
+      // Fall back to DOM state.
     }
 
     const links = Array.from(doc.querySelectorAll('#tabs > ul > li > a'));
@@ -153,9 +138,7 @@
     );
   }
 
-  function filterDataForQuery(doc, $, roomValue) {
-    // This intentionally mirrors the IMIS code in verso_data/sez_xxBi.js:
-    // $('#filtersForm,#commonFiltersForm').find('.filteritem').serialize()
+  function filterDataForQuery($, roomValue) {
     const data = $('#filtersForm,#commonFiltersForm')
       .find('.filteritem')
       .serializeArray()
@@ -172,12 +155,10 @@
     const base = doc.location?.href || location.href;
     const url = new URL(tabLink.getAttribute('href') || tabLink.href, base);
 
-    // The IMIS tab link can be mutated by previous filtering and contain stale
-    // filter parameters. Remove them before appending the current values.
     const filterNames = new Set(getFilterElements(doc).map(element => element.name));
     for (const name of filterNames) url.searchParams.delete(name);
 
-    const data = filterDataForQuery(doc, $, roomValue);
+    const data = filterDataForQuery($, roomValue);
     for (const item of data) url.searchParams.append(item.name, item.value);
 
     return url.toString();
@@ -194,7 +175,9 @@
       })
         .done(html => resolve(String(html || '')))
         .fail((xhr, status, error) => {
-          reject(new Error(`IMIS AJAX failed: ${status}${error ? ' / ' + error : ''} (HTTP ${xhr.status || '?'})`));
+          reject(new Error(
+            `IMIS AJAX failed: ${status}${error ? ' / ' + error : ''} (HTTP ${xhr.status || '?'})`
+          ));
         });
     });
   }
@@ -259,9 +242,6 @@
     const nameIndex = findColumnIndex(table, ['nazev']);
     const locationIndex = findColumnIndex(table, ['umisteni', 'mistnost', 'lokalita']);
 
-    // Fallback indices match the current IMIS table:
-    // 0 Akce, 1 Poř.č., 2 Odpovědná osoba, 3 Evidenční číslo,
-    // 4 Název, 5 Umístění.
     const idxPerson = personIndex >= 0 ? personIndex : 2;
     const idxInventory = inventoryIndex >= 0 ? inventoryIndex : 3;
     const idxName = nameIndex >= 0 ? nameIndex : 4;
@@ -341,7 +321,7 @@
     return result;
   }
 
-  function downloadCsv(rows, suffix = '') {
+  function downloadCsv(rows) {
     const building = CONFIG.buildingPrefix.replace(/\/$/, '');
     const data = [[building, `Místnost: více místností objektu ${building}`, '', '']];
 
@@ -360,14 +340,7 @@
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-
-    if (suffix) {
-      const safeSuffix = suffix.replace(/[^A-Za-z0-9._-]/g, '_');
-      link.download = `evidencni_cisla_auto_test_${safeSuffix}.csv`;
-    } else {
-      link.download = CONFIG.outputFileName;
-    }
-
+    link.download = CONFIG.outputFileName;
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -385,7 +358,7 @@
       'right:16px',
       'bottom:16px',
       'z-index:2147483647',
-      'width:420px',
+      'width:440px',
       'max-width:calc(100vw - 32px)',
       'padding:14px',
       'background:#1f2327',
@@ -399,7 +372,8 @@
     box.innerHTML = `
       <div style="font-weight:bold;margin-bottom:6px">Automatický export místností</div>
       <div id="inventory-auto-export-line">Připravuji…</div>
-      <div id="inventory-auto-export-stats" style="margin-top:5px;color:#bbb"></div>
+      <div id="inventory-auto-export-warning" style="display:none;margin-top:7px;padding:7px;background:#5c4700;color:#fff2b3;border-radius:4px"></div>
+      <div id="inventory-auto-export-stats" style="margin-top:7px;color:#bbb"></div>
       <button id="inventory-auto-export-cancel" style="margin-top:9px;padding:5px 10px">Zrušit</button>
     `;
 
@@ -407,9 +381,6 @@
     return box;
   }
 
-  // ============================================================
-  // MAIN
-  // ============================================================
   const sourceDoc = findImisDocument();
   if (!sourceDoc) {
     console.error('[auto-export] IMIS filter page was not found.');
@@ -424,6 +395,7 @@
 
   const statusBox = createStatusBox(sourceDoc);
   const statusLine = statusBox.querySelector('#inventory-auto-export-line');
+  const warningLine = statusBox.querySelector('#inventory-auto-export-warning');
   const statsLine = statusBox.querySelector('#inventory-auto-export-stats');
   const cancelButton = statusBox.querySelector('#inventory-auto-export-cancel');
 
@@ -435,9 +407,19 @@
 
   const rows = new Map();
   const rooms = new Set();
+  const limitPrefixes = [];
   let requests = 0;
   let oversized = 0;
   let empty = 0;
+
+  function showLimitWarning(prefix) {
+    oversized += 1;
+    limitPrefixes.push(prefix);
+    warningLine.style.display = 'block';
+    warningLine.textContent =
+      `⚠ IMIS vrátil limit >9000 pro ${prefix}. Tuto větev automaticky dělím na menší dotazy. ` +
+      `Zásahů limitu zatím: ${oversized}.`;
+  }
 
   function addRows(found) {
     for (const row of found) {
@@ -450,43 +432,15 @@
     }
   }
 
+  function updateStats(queueLength) {
+    statsLine.textContent =
+      `Požadavky: ${requests} • fronta: ${queueLength} • místnosti: ${rooms.size} • ` +
+      `položky: ${rows.size} • limity >9000: ${oversized}`;
+  }
+
   try {
-    // ----------------------------------------------------------
-    // SAFE SINGLE-ROOM TEST
-    // ----------------------------------------------------------
-    if (CONFIG.testQuery) {
-      statusLine.textContent = `Testuji IMIS AJAX: ${CONFIG.testQuery}`;
-      statsLine.textContent = 'Proběhne pouze jeden požadavek.';
-
-      const result = await runQuery(sourceDoc, $, CONFIG.testQuery);
-      requests = 1;
-
-      if (result.state === 'too-large') {
-        throw new Error(`Test query ${CONFIG.testQuery} unexpectedly returned >9000 records.`);
-      }
-
-      addRows(result.rows);
-
-      if (!rows.size) {
-        throw new Error(`Test query ${CONFIG.testQuery} returned no inventory rows.`);
-      }
-
-      downloadCsv(rows, CONFIG.testQuery);
-      statusLine.textContent = `TEST OK: ${rows.size} položek, ${rooms.size} místnost(i). CSV staženo.`;
-      statsLine.textContent = 'Pokud počet odpovídá ručnímu výsledku, nastavíme testQuery na prázdný řetězec a zapneme automatiku.';
-
-      console.log('[auto-export] SAFE TEST finished', {
-        query: CONFIG.testQuery,
-        rows: rows.size,
-        rooms: Array.from(rooms).sort(),
-      });
-      return;
-    }
-
-    // ----------------------------------------------------------
-    // AUTOMATIC DISCOVERY
-    // ----------------------------------------------------------
-    // Deliberately skip the broad buildingPrefix query itself.
+    // The broad 64/ query is deliberately skipped. Start only with known first
+    // characters used by room/location names in this building.
     const queue = Array.from(CONFIG.initialChars).map(char => ({
       prefix: CONFIG.buildingPrefix + char,
       depth: 1,
@@ -503,16 +457,19 @@
       visited.add(job.prefix);
 
       statusLine.textContent = `Hledám: ${job.prefix}`;
-      statsLine.textContent = `Požadavky: ${requests} • fronta: ${queue.length} • místnosti: ${rooms.size} • položky: ${rows.size}`;
+      updateStats(queue.length);
 
       const result = await runQuery(sourceDoc, $, job.prefix);
       requests += 1;
 
       if (result.state === 'too-large') {
-        oversized += 1;
+        showLimitWarning(job.prefix);
 
         if (job.depth >= CONFIG.maxDepth) {
-          throw new Error(`Prefix ${job.prefix} is still too large at maxDepth=${CONFIG.maxDepth}.`);
+          throw new Error(
+            `Prefix ${job.prefix} je stále nad limitem >9000 i na maximální hloubce. ` +
+            'Export není kompletní a CSV se nevytvoří.'
+          );
         }
 
         for (const char of CONFIG.splitChars) {
@@ -525,7 +482,7 @@
         addRows(result.rows);
       }
 
-      statsLine.textContent = `Požadavky: ${requests} • fronta: ${queue.length} • místnosti: ${rooms.size} • položky: ${rows.size}`;
+      updateStats(queue.length);
       await sleep(CONFIG.delayMs);
     }
 
@@ -540,11 +497,27 @@
 
     downloadCsv(rows);
     statusLine.textContent = `Hotovo. Staženo ${rows.size} položek z ${rooms.size} místností.`;
-    statsLine.textContent = `Požadavky: ${requests} • rozdělení kvůli limitu: ${oversized} • prázdné: ${empty}`;
+
+    if (oversized) {
+      warningLine.style.display = 'block';
+      warningLine.textContent =
+        `⚠ Během exportu byl ${oversized}× zasažen limit >9000. ` +
+        'Všechny zasažené větve byly automaticky rozděleny a dokončeny.';
+    } else {
+      warningLine.style.display = 'block';
+      warningLine.style.background = '#174d2a';
+      warningLine.style.color = '#d8ffe4';
+      warningLine.textContent = '✓ Žádný dotaz nenarazil na limit >9000.';
+    }
+
+    statsLine.textContent =
+      `Požadavky: ${requests} • limity >9000: ${oversized} • prázdné: ${empty} • ` +
+      `místnosti: ${rooms.size} • položky: ${rows.size}`;
 
     console.log('[auto-export] finished', {
       requests,
       oversized,
+      limitPrefixes,
       empty,
       rooms: Array.from(rooms).sort(),
       rows: rows.size,
@@ -552,5 +525,9 @@
   } catch (error) {
     console.error('[auto-export] failed', error);
     statusLine.textContent = 'Chyba: ' + (error?.message || String(error));
+    warningLine.style.display = 'block';
+    warningLine.style.background = '#5b1919';
+    warningLine.style.color = '#ffd9d9';
+    warningLine.textContent = 'Export nebyl dokončen. CSV se nevytvořilo jako kompletní výstup.';
   }
 })();
