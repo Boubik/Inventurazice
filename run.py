@@ -287,7 +287,6 @@ class InventoryApp:
 
         self._search_trace = self.search_var.trace_add("write", lambda *_args: self.perform_search())
         self.root.bind("<Escape>", lambda _event: self.go_back())
-        self.root.bind("<Return>", lambda _event: self.open_file())
 
         self.refresh_file_list(reset_search=True)
         self.file_listbox.focus_set()
