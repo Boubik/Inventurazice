@@ -5,12 +5,10 @@
   // CONFIGURATION
   // ============================================================
   const CONFIG = {
-    // Change only this for another building/object.
+    // Change this for another building/object.
     buildingPrefix: '64/',
 
     // Characters used when a query is still too large (>9000).
-    // The FIS search appears to be substring-based, so 64/ -> 64/0, 64/1, ...
-    // If your room names use other first/next characters, add them here.
     splitChars: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-._',
 
     // Safety limits so the script cannot accidentally hammer the server forever.
@@ -23,6 +21,10 @@
 
     // Downloaded CSV name.
     outputFileName: 'evidencni_cisla_auto_64.csv',
+
+    // Helpful while we are figuring out the exact FIS response flow.
+    debug: true,
+    maxFrameDepth: 3,
   };
 
   // ============================================================
@@ -118,8 +120,30 @@
     return -1;
   }
 
+  function findInventoryTable(doc) {
+    const known = doc.querySelector('table.zaznamy');
+    if (known) return known;
+
+    // Fallback: FIS may return the same table without the expected class.
+    for (const table of doc.querySelectorAll('table')) {
+      const headerText = normalizeText(
+        Array.from(table.querySelectorAll('th'))
+          .map(th => th.innerText || th.textContent || '')
+          .join(' | ')
+      );
+
+      const hasInventory = headerText.includes('evidencni cislo') || headerText.includes('inventarni cislo');
+      const hasName = headerText.includes('nazev');
+      const hasLocation = headerText.includes('umisteni') || headerText.includes('mistnost') || headerText.includes('lokalita');
+
+      if (hasInventory && hasName && hasLocation) return table;
+    }
+
+    return null;
+  }
+
   function isTooLarge(doc) {
-    const text = normalizeText(doc.body ? doc.body.textContent : '');
+    const text = normalizeText(doc.body ? doc.body.textContent : doc.documentElement?.textContent || '');
     return (
       text.includes('vice nez 9000') ||
       text.includes('pozadavek na velky objem dat') ||
@@ -127,8 +151,100 @@
     );
   }
 
+  function describeDocument(doc, url) {
+    return {
+      url,
+      title: doc.title || '',
+      tables: doc.querySelectorAll('table').length,
+      zaznamy: doc.querySelectorAll('table.zaznamy').length,
+      frames: doc.querySelectorAll('frame, iframe').length,
+      forms: doc.querySelectorAll('form').length,
+      tooLarge: isTooLarge(doc),
+      textStart: String(doc.body?.innerText || doc.documentElement?.textContent || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 250),
+    };
+  }
+
+  async function fetchDocument(url, options = {}) {
+    const response = await fetch(url, {
+      credentials: 'same-origin',
+      cache: 'no-store',
+      redirect: 'follow',
+      ...options,
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} ${response.statusText}: ${url}`);
+    }
+
+    const html = await response.text();
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    return { doc, url: response.url || url };
+  }
+
+  async function resolveResultDocument(doc, baseUrl, depth = 0, seen = new Set()) {
+    if (findInventoryTable(doc) || isTooLarge(doc)) {
+      return { doc, url: baseUrl };
+    }
+
+    if (depth >= CONFIG.maxFrameDepth) {
+      return { doc, url: baseUrl };
+    }
+
+    // Some old applications return a frameset and put the actual results into a frame.
+    const frames = Array.from(doc.querySelectorAll('frame[src], iframe[src]'));
+    for (const frame of frames) {
+      let frameUrl;
+      try {
+        frameUrl = new URL(frame.getAttribute('src'), baseUrl).toString();
+      } catch (_) {
+        continue;
+      }
+
+      if (seen.has(frameUrl)) continue;
+      seen.add(frameUrl);
+
+      try {
+        const parsed = new URL(frameUrl);
+        if (parsed.origin !== location.origin) continue;
+
+        const fetched = await fetchDocument(frameUrl);
+        if (CONFIG.debug) console.log('[auto-export] frame response', describeDocument(fetched.doc, fetched.url));
+
+        const resolved = await resolveResultDocument(fetched.doc, fetched.url, depth + 1, seen);
+        if (findInventoryTable(resolved.doc) || isTooLarge(resolved.doc)) return resolved;
+      } catch (error) {
+        if (CONFIG.debug) console.warn('[auto-export] could not follow frame', frameUrl, error);
+      }
+    }
+
+    // Also handle simple meta-refresh intermediate pages.
+    const refresh = doc.querySelector('meta[http-equiv="refresh" i]');
+    if (refresh) {
+      const content = refresh.getAttribute('content') || '';
+      const match = content.match(/url\s*=\s*(.+)$/i);
+      if (match) {
+        try {
+          const refreshUrl = new URL(match[1].replace(/^['"]|['"]$/g, '').trim(), baseUrl).toString();
+          if (!seen.has(refreshUrl) && new URL(refreshUrl).origin === location.origin) {
+            seen.add(refreshUrl);
+            const fetched = await fetchDocument(refreshUrl);
+            if (CONFIG.debug) console.log('[auto-export] meta-refresh response', describeDocument(fetched.doc, fetched.url));
+            return resolveResultDocument(fetched.doc, fetched.url, depth + 1, seen);
+          }
+        } catch (_) {
+          // Ignore malformed refresh targets.
+        }
+      }
+    }
+
+    return { doc, url: baseUrl };
+  }
+
   function extractRows(doc) {
-    const table = doc.querySelector('table.zaznamy');
+    const table = findInventoryTable(doc);
     if (!table) return [];
 
     const personIndex = findColumnIndex(table, ['odpovedna osoba']);
@@ -165,7 +281,8 @@
 
   async function fetchFilteredDocument(form, sourceDoc, roomValue) {
     const method = (form.method || 'GET').toUpperCase();
-    const action = new URL(form.action || sourceDoc.location.href, sourceDoc.location.href);
+    const sourceUrl = sourceDoc.location?.href || location.href;
+    const action = new URL(form.action || sourceUrl, sourceUrl);
     const formData = cloneFormData(form, roomValue);
 
     const options = {
@@ -192,13 +309,20 @@
       }
     }
 
-    const response = await fetch(url.toString(), options);
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} ${response.statusText} for ${roomValue}`);
+    const fetched = await fetchDocument(url.toString(), options);
+
+    if (CONFIG.debug) {
+      console.log(`[auto-export] response for ${roomValue}`, describeDocument(fetched.doc, fetched.url));
+      console.log('[auto-export] submitted form', {
+        method,
+        action: action.toString(),
+        roomField: CONFIG.roomFieldName,
+        roomValue,
+        fields: Array.from(formData.entries()).map(([key, value]) => [key, typeof value === 'string' ? value : '[file]']),
+      });
     }
 
-    const html = await response.text();
-    return new DOMParser().parseFromString(html, 'text/html');
+    return resolveResultDocument(fetched.doc, fetched.url);
   }
 
   function downloadCsv(rows) {
@@ -276,6 +400,17 @@
     return;
   }
 
+  if (CONFIG.debug) {
+    console.log('[auto-export] source page', {
+      url: sourceDoc.location?.href || location.href,
+      roomFieldValue: roomControl.value || '',
+      formMethod: form.method || 'GET',
+      formAction: form.action || '',
+      formEnctype: form.enctype || '',
+      formTarget: form.target || '',
+    });
+  }
+
   const statusBox = createStatusBox();
   const statusLine = statusBox.querySelector('#inventory-auto-export-line');
   const statsLine = statusBox.querySelector('#inventory-auto-export-stats');
@@ -308,7 +443,8 @@
       statusLine.textContent = `Hledám: ${job.prefix}`;
       statsLine.textContent = `Požadavky: ${requests} • fronta: ${queue.length} • místnosti: ${rooms.size} • položky: ${rows.size}`;
 
-      const resultDoc = await fetchFilteredDocument(form, sourceDoc, job.prefix);
+      const result = await fetchFilteredDocument(form, sourceDoc, job.prefix);
+      const resultDoc = result.doc;
       requests += 1;
 
       if (isTooLarge(resultDoc)) {
@@ -323,7 +459,12 @@
         }
       } else {
         const found = extractRows(resultDoc);
-        if (!found.length) empty += 1;
+        if (!found.length) {
+          empty += 1;
+          if (CONFIG.debug) {
+            console.warn(`[auto-export] no rows for ${job.prefix}`, describeDocument(resultDoc, result.url));
+          }
+        }
 
         for (const row of found) {
           rooms.add(row.room);
@@ -346,7 +487,7 @@
     }
 
     if (!rows.size) {
-      throw new Error('No inventory rows were found. The FIS form or table structure may differ from the expected layout.');
+      throw new Error('No inventory rows were found. Open the console and send the [auto-export] source/response logs; they now show the actual FIS form action, fields, frames and returned page structure.');
     }
 
     statusLine.textContent = 'Hotovo – vytvářím CSV…';
