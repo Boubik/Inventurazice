@@ -4,29 +4,69 @@ Desktop utility for preparing inventory CSV exports and displaying QR codes for 
 
 ## Components
 
-- `parser.py` – imports one or more CSV files and creates normalized room/owner views under `out/`.
+- `parser.py` – imports one or more CSV files and creates normalized outputs under `out/`.
 - `run.py` – scalable Tkinter QR viewer for the generated CSV files.
 - `js.txt` – browser snippet for exporting the currently displayed inventory table to CSV.
 
 ## Parser
 
-The parser accepts both formats used by this project:
+The parser recognizes two distinct input types and **keeps their outputs separate**.
 
-1. Room exports with three columns:
+### 1. Room exports
+
+Room exports have three columns and usually come from `js.txt`:
 
 ```csv
 64/7.06;Místnost: 64/7.06;
 1003201/1;Owner;Projector
 ```
 
-2. The older 6+ column inventory export where the location is stored in column 6.
+They are written to:
+
+```text
+out/
+├── rooms/
+│   └── 64/
+│       └── 7.06.csv
+└── names/
+    └── Owner Name/
+        └── 64/
+            └── 7.06.csv
+```
+
+Duplicates are removed only within the room-export dataset. If the same room appears once as `7.06` and once as `64/7.06`, the fully qualified form is preferred.
+
+### 2. MANKO export
+
+The official MANKO CSV contains owner sections and a 7-column table. The important fields are:
+
+- column 0 – inventory number
+- column 1 – item name
+- column 5 – full location such as `64/7.06`
+- rows beginning with `Odpovědná osoba:` / `Odpovědná ososba:` identify the owner
+
+MANKO is always generated into its own namespace:
+
+```text
+out/
+└── manko/
+    ├── rooms/
+    │   └── 64/
+    │       └── 7.06.csv
+    └── names/
+        └── Owner Name/
+            └── 64/
+                └── 7.06.csv
+```
+
+MANKO records are **not merged or deduplicated with normal room exports**. The same inventory number may therefore exist once in `out/rooms/...` and separately in `out/manko/rooms/...`, which is intentional.
 
 ### Usage
 
 Process explicit files:
 
 ```bash
-python parser.py export1.csv export2.csv export3.csv
+python parser.py MANKO.csv evidencni_cisla_64_7.06.csv
 ```
 
 Process a directory recursively:
@@ -47,20 +87,7 @@ Choose another output directory:
 python parser.py ./exports --output prepared
 ```
 
-Outputs are regenerated on every run:
-
-```text
-out/
-├── rooms/
-│   └── 64/
-│       └── 7.06.csv
-└── names/
-    └── Owner Name/
-        └── 64/
-            └── 7.06.csv
-```
-
-Inventory numbers are deduplicated across all supplied inputs. Re-running the parser with the same sources does not append duplicate rows. If the same room appears once as `7.06` and once as `64/7.06`, the fully qualified form is preferred. Genuine conflicts are reported in the console and the later input wins.
+Each dataset is regenerated only when an input of that type is present. For example, running the parser only with room exports leaves an existing `out/manko/` untouched, and running it only with MANKO leaves the normal `out/rooms/` and `out/names/` untouched.
 
 ## QR viewer
 
