@@ -3,14 +3,20 @@ from __future__ import annotations
 import argparse
 import csv
 import glob
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
 ROOM_HEADER_PREFIXES = ("místnost:", "mistnost:")
-OWNER_PREFIXES = ("odpovědná osoba:", "odpovedna osoba:", "odpovědná ososba:", "odpovedna ososba:")
+OWNER_PREFIXES = (
+    "odpovědná osoba:",
+    "odpovedna osoba:",
+    "odpovědná ososba:",  # typo used by the current MANKO export
+    "odpovedna ososba:",
+)
+SOURCE_ROOM = "room"
+SOURCE_MANKO = "manko"
 
 
 @dataclass(frozen=True)
@@ -34,6 +40,12 @@ class ImportStats:
     conflicts: int = 0
 
 
+@dataclass(frozen=True)
+class ParsedFile:
+    kind: str | None
+    records: list[Record]
+
+
 def clean(value: str | None) -> str:
     return (value or "").replace("\ufeff", "").strip()
 
@@ -43,11 +55,31 @@ def normalize_room(value: str) -> str:
     return "/".join(parts)
 
 
+def strip_owner_prefix(value: str) -> str | None:
+    text = clean(value)
+    folded = text.casefold()
+    for prefix in OWNER_PREFIXES:
+        if folded.startswith(prefix):
+            return text[len(prefix):].strip()
+    return None
+
+
 def looks_like_room_export(first_row: Sequence[str], path: Path) -> bool:
     if not first_row:
         return False
     second = clean(first_row[1]).casefold() if len(first_row) > 1 else ""
     return second.startswith(ROOM_HEADER_PREFIXES) or path.name.casefold().startswith("evidencni_cisla_")
+
+
+def looks_like_manko(rows: Sequence[Sequence[str]]) -> bool:
+    for row in rows[:100]:
+        if not row:
+            continue
+        if strip_owner_prefix(row[0]) is not None:
+            return True
+        if len(row) > 5 and clean(row[5]).casefold() == "lokalita":
+            return True
+    return False
 
 
 def is_placeholder_location(value: str) -> bool:
@@ -82,19 +114,14 @@ def parse_room_export(path: Path, rows: Sequence[Sequence[str]], stats: ImportSt
     return records
 
 
-def strip_owner_prefix(value: str) -> str | None:
-    folded = clean(value).casefold()
-    for prefix in OWNER_PREFIXES:
-        if folded.startswith(prefix):
-            return clean(value)[len(prefix):].strip()
-    return None
+def parse_manko(path: Path, rows: Sequence[Sequence[str]], stats: ImportStats) -> list[Record]:
+    """Parse the official MANKO export.
 
-
-def parse_legacy_export(path: Path, rows: Sequence[Sequence[str]], stats: ImportStats) -> list[Record]:
-    """Parse the older 6+ column export used by the original parser.py.
-
-    Column 0 = inventory number, column 1 = item name, column 5 = location.
-    Files may optionally contain "Odpovědná osoba:" section markers.
+    The current format stores:
+      column 0 = inventory number
+      column 1 = item name
+      column 5 = full location (for example 64/7.06)
+    and uses ``Odpovědná ososba: ...`` rows to start owner sections.
     """
     records: list[Record] = []
     owner = ""
@@ -145,35 +172,37 @@ def read_csv_rows(path: Path) -> list[list[str]]:
         return list(csv.reader(handle, delimiter=delimiter))
 
 
-def parse_file(path: Path, stats: ImportStats) -> list[Record]:
+def parse_file_typed(path: Path, stats: ImportStats) -> ParsedFile:
     stats.files_seen += 1
     try:
         rows = read_csv_rows(path)
     except (OSError, UnicodeError, csv.Error) as exc:
         stats.files_skipped += 1
         print(f"[SKIP] {path}: {exc}")
-        return []
+        return ParsedFile(None, [])
 
     first_nonempty = next((row for row in rows if row and any(clean(value) for value in row)), [])
     if not first_nonempty:
         stats.files_skipped += 1
-        return []
+        return ParsedFile(None, [])
 
     if looks_like_room_export(first_nonempty, path):
         stats.files_recognized += 1
         start = rows.index(first_nonempty)
-        return parse_room_export(path, rows[start:], stats)
+        return ParsedFile(SOURCE_ROOM, parse_room_export(path, rows[start:], stats))
 
-    has_legacy_shape = any(len(row) > 5 for row in rows[:50]) or any(
-        row and strip_owner_prefix(row[0]) is not None for row in rows[:50]
-    )
-    if has_legacy_shape:
+    if looks_like_manko(rows):
         stats.files_recognized += 1
-        return parse_legacy_export(path, rows, stats)
+        return ParsedFile(SOURCE_MANKO, parse_manko(path, rows, stats))
 
     stats.files_skipped += 1
     print(f"[SKIP] {path}: unknown CSV format")
-    return []
+    return ParsedFile(None, [])
+
+
+def parse_file(path: Path, stats: ImportStats) -> list[Record]:
+    """Compatibility wrapper returning records regardless of input kind."""
+    return parse_file_typed(path, stats).records
 
 
 def room_specificity(room: str) -> tuple[int, int]:
@@ -229,7 +258,6 @@ def merge_duplicate(old: Record, new: Record, stats: ImportStats) -> Record:
 
 def deduplicate(records: Iterable[Record], stats: ImportStats) -> list[Record]:
     by_inventory: dict[str, Record] = {}
-
     for record in records:
         key = clean(record.inventory_id).casefold()
         if not key:
@@ -238,7 +266,6 @@ def deduplicate(records: Iterable[Record], stats: ImportStats) -> list[Record]:
             by_inventory[key] = merge_duplicate(by_inventory[key], record, stats)
         else:
             by_inventory[key] = record
-
     return list(by_inventory.values())
 
 
@@ -314,6 +341,12 @@ def write_owner_files(records: Iterable[Record], output_dir: Path) -> tuple[int,
     return len(owners), len(grouped)
 
 
+def write_dataset(records: list[Record], output_root: Path) -> tuple[int, int, int]:
+    rooms = write_room_files(records, output_root / "rooms")
+    owners, owner_room_files = write_owner_files(records, output_root / "names")
+    return rooms, owners, owner_room_files
+
+
 def is_relative_to(path: Path, parent: Path) -> bool:
     try:
         path.resolve().relative_to(parent.resolve())
@@ -324,7 +357,6 @@ def is_relative_to(path: Path, parent: Path) -> bool:
 
 def expand_inputs(raw_inputs: Sequence[str], excluded_roots: Sequence[Path]) -> list[Path]:
     candidates: list[Path] = []
-
     if not raw_inputs:
         raw_inputs = ["."]
 
@@ -364,15 +396,15 @@ def expand_inputs(raw_inputs: Sequence[str], excluded_roots: Sequence[Path]) -> 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Parse one or more inventory CSV exports into room- and owner-based files. "
-            "With no INPUT arguments, all CSV files below the current directory are scanned."
+            "Parse inventory CSV exports. Room exports are written to out/rooms + out/names; "
+            "official MANKO exports are kept separate in out/manko/rooms + out/manko/names."
         )
     )
     parser.add_argument(
         "inputs",
         metavar="INPUT",
         nargs="*",
-        help="CSV file, directory, or glob. May be supplied zero or more times.",
+        help="CSV file, directory, or glob. With no inputs, scan CSV files below the current directory.",
     )
     parser.add_argument("--output", default="out", help="Output root (default: out)")
     return parser
@@ -381,9 +413,6 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     output_root = Path(args.output)
-    rooms_dir = output_root / "rooms"
-    owners_dir = output_root / "names"
-
     input_files = expand_inputs(args.inputs, [output_root])
     if not input_files:
         print("No input CSV files found. Nothing to do.")
@@ -394,27 +423,50 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"  - {path}")
 
     stats = ImportStats()
-    all_records: list[Record] = []
+    records_by_kind: dict[str, list[Record]] = {SOURCE_ROOM: [], SOURCE_MANKO: []}
+    files_by_kind: dict[str, int] = {SOURCE_ROOM: 0, SOURCE_MANKO: 0}
+
     for path in input_files:
-        all_records.extend(parse_file(path, stats))
+        parsed = parse_file_typed(path, stats)
+        if parsed.kind in records_by_kind:
+            files_by_kind[parsed.kind] += 1
+            records_by_kind[parsed.kind].extend(parsed.records)
 
-    records = deduplicate(all_records, stats)
-    rooms = write_room_files(records, rooms_dir)
-    owners, owner_room_files = write_owner_files(records, owners_dir)
+    print("\nOutputs:")
 
-    print("\nStatistics:")
+    if files_by_kind[SOURCE_ROOM]:
+        room_records = deduplicate(records_by_kind[SOURCE_ROOM], stats)
+        rooms, owners, owner_room_files = write_dataset(room_records, output_root)
+        print(f"  Room exports ({files_by_kind[SOURCE_ROOM]} files):")
+        print(f"    Unique inventory: {len(room_records)}")
+        print(f"    Rooms written:    {rooms}")
+        print(f"    Owners written:   {owners}")
+        print(f"    Owner/room files: {owner_room_files}")
+        print(f"    Path:             {output_root}")
+    else:
+        print("  Room exports: none (existing room output left untouched)")
+
+    if files_by_kind[SOURCE_MANKO]:
+        manko_records = deduplicate(records_by_kind[SOURCE_MANKO], stats)
+        manko_root = output_root / "manko"
+        rooms, owners, owner_room_files = write_dataset(manko_records, manko_root)
+        print(f"  MANKO ({files_by_kind[SOURCE_MANKO]} files):")
+        print(f"    Unique inventory: {len(manko_records)}")
+        print(f"    Rooms written:    {rooms}")
+        print(f"    Owners written:   {owners}")
+        print(f"    Owner/room files: {owner_room_files}")
+        print(f"    Path:             {manko_root}")
+    else:
+        print("  MANKO: none (existing MANKO output left untouched)")
+
+    print("\nImport statistics:")
     print(f"  Files seen:          {stats.files_seen}")
     print(f"  Files recognized:    {stats.files_recognized}")
     print(f"  Files skipped:       {stats.files_skipped}")
     print(f"  Parsed rows:         {stats.rows_read}")
-    print(f"  Unique inventory:    {len(records)}")
     print(f"  Exact duplicates:    {stats.exact_duplicates}")
     print(f"  Merged duplicates:   {stats.merged_duplicates}")
     print(f"  Conflicts:           {stats.conflicts}")
-    print(f"  Rooms written:       {rooms}")
-    print(f"  Owners written:      {owners}")
-    print(f"  Owner/room files:    {owner_room_files}")
-    print(f"\nOutput: {output_root}")
     return 0
 
 
