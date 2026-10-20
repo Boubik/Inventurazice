@@ -8,28 +8,25 @@
     // Change this for another building/object.
     buildingPrefix: '64/',
 
-    // Characters used when a query is still too large (>9000).
+    // Used only when a query is still too large (>9000 records).
     splitChars: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-._',
 
-    // Safety limits so the script cannot accidentally hammer the server forever.
+    // Small pause between completed searches.
     delayMs: 300,
+
+    // FIS can take a while for large searches. This is per query.
+    queryTimeoutMs: 180000,
+    pollMs: 300,
+
+    // Safety limits.
     maxDepth: 7,
     maxRequests: 800,
 
-    // Current FIS form field used for the room/location filter.
     roomFieldName: 'mistnost',
-
-    // Downloaded CSV name.
     outputFileName: 'evidencni_cisla_auto_64.csv',
-
-    // Helpful while we are figuring out the exact FIS response flow.
     debug: true,
-    maxFrameDepth: 3,
   };
 
-  // ============================================================
-  // HELPERS
-  // ============================================================
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
   function normalizeText(value) {
@@ -55,22 +52,36 @@
 
   function csvCell(value) {
     const text = String(value == null ? '' : value);
-    if (/[;"\r\n]/.test(text)) return '"' + text.replace(/"/g, '""') + '"';
-    return text;
+    return /[;"\r\n]/.test(text)
+      ? '"' + text.replace(/"/g, '""') + '"'
+      : text;
   }
 
-  function findWorkingDocument() {
-    const candidates = [document];
-    for (const frame of document.querySelectorAll('frame, iframe')) {
-      try {
-        const doc = frame.contentDocument || frame.contentWindow.document;
-        if (doc) candidates.push(doc);
-      } catch (_) {
-        // Ignore cross-origin frames.
+  function allSameOriginDocuments(rootDoc) {
+    const result = [];
+    const seen = new Set();
+
+    function visit(doc) {
+      if (!doc || seen.has(doc)) return;
+      seen.add(doc);
+      result.push(doc);
+
+      for (const frame of doc.querySelectorAll('frame, iframe')) {
+        try {
+          const child = frame.contentDocument || frame.contentWindow?.document;
+          if (child) visit(child);
+        } catch (_) {
+          // Ignore cross-origin frames.
+        }
       }
     }
 
-    for (const doc of candidates) {
+    visit(rootDoc);
+    return result;
+  }
+
+  function findWorkingDocument() {
+    for (const doc of allSameOriginDocuments(document)) {
       if (doc.querySelector(`[name="${CONFIG.roomFieldName}"]`)) return doc;
     }
     return document;
@@ -87,19 +98,20 @@
     }) || submits[0] || null;
   }
 
-  function cloneFormData(form, roomValue) {
+  function buildFormData(form, roomValue) {
     const data = new FormData(form);
     data.set(CONFIG.roomFieldName, roomValue);
 
+    // Native FormData(form) does not automatically include the clicked submit button.
     const submitter = findFilterSubmitter(form);
-    if (submitter && submitter.name && !data.has(submitter.name)) {
+    if (submitter && submitter.name) {
       data.append(submitter.name, submitter.value || '');
     }
 
     return data;
   }
 
-  function formDataToSearchParams(formData) {
+  function toSearchParams(formData) {
     const params = new URLSearchParams();
     for (const [key, value] of formData.entries()) {
       if (typeof value === 'string') params.append(key, value);
@@ -107,15 +119,34 @@
     return params;
   }
 
+  function buildGetUrl(form, sourceDoc, roomValue) {
+    const base = sourceDoc.location?.href || location.href;
+    const url = new URL(form.action || base, base);
+    const data = buildFormData(form, roomValue);
+    const params = toSearchParams(data);
+
+    // Keep action query parameters but replace parameters also supplied by the form.
+    const suppliedNames = new Set();
+    for (const [key] of params.entries()) suppliedNames.add(key);
+    for (const key of suppliedNames) url.searchParams.delete(key);
+    for (const [key, value] of params.entries()) url.searchParams.append(key, value);
+
+    return { url: url.toString(), data };
+  }
+
   function findColumnIndex(table, names) {
-    for (const row of table.querySelectorAll('tr')) {
-      const cells = Array.from(row.querySelectorAll('th'));
+    const rows = Array.from(table.querySelectorAll('tr'));
+    for (const row of rows) {
+      const cells = Array.from(row.querySelectorAll('th, td'));
       if (!cells.length) continue;
 
       for (let index = 0; index < cells.length; index++) {
         const header = normalizeText(cells[index].innerText || cells[index].textContent || '');
-        if (names.some(name => header.includes(name))) return index;
+        if (names.some(name => header === name || header.includes(name))) return index;
       }
+
+      // Only the first few rows can reasonably be headers.
+      if (rows.indexOf(row) > 4) break;
     }
     return -1;
   }
@@ -124,12 +155,10 @@
     const known = doc.querySelector('table.zaznamy');
     if (known) return known;
 
-    // Fallback: FIS may return the same table without the expected class.
     for (const table of doc.querySelectorAll('table')) {
+      const firstRows = Array.from(table.querySelectorAll('tr')).slice(0, 5);
       const headerText = normalizeText(
-        Array.from(table.querySelectorAll('th'))
-          .map(th => th.innerText || th.textContent || '')
-          .join(' | ')
+        firstRows.map(row => row.innerText || row.textContent || '').join(' | ')
       );
 
       const hasInventory = headerText.includes('evidencni cislo') || headerText.includes('inventarni cislo');
@@ -142,8 +171,12 @@
     return null;
   }
 
+  function documentText(doc) {
+    return normalizeText(doc.body?.innerText || doc.body?.textContent || doc.documentElement?.textContent || '');
+  }
+
   function isTooLarge(doc) {
-    const text = normalizeText(doc.body ? doc.body.textContent : doc.documentElement?.textContent || '');
+    const text = documentText(doc);
     return (
       text.includes('vice nez 9000') ||
       text.includes('pozadavek na velky objem dat') ||
@@ -151,108 +184,52 @@
     );
   }
 
-  function describeDocument(doc, url) {
+  function isEmptyResult(doc) {
+    const text = documentText(doc);
+    return (
+      text.includes('nebyly nalezeny zadne zaznamy') ||
+      text.includes('nebyl nalezen zadny zaznam') ||
+      text.includes('zadne zaznamy') ||
+      text.includes('0 zaznamu')
+    );
+  }
+
+  function isLoadingPage(doc) {
+    const text = documentText(doc);
+    return (
+      text.includes('probiha komunikace se serverem') ||
+      text.includes('nacita se vetsi mnozstvi dat')
+    );
+  }
+
+  function describeDocument(doc) {
     return {
-      url,
+      url: (() => {
+        try { return doc.location?.href || ''; } catch (_) { return ''; }
+      })(),
       title: doc.title || '',
       tables: doc.querySelectorAll('table').length,
       zaznamy: doc.querySelectorAll('table.zaznamy').length,
       frames: doc.querySelectorAll('frame, iframe').length,
-      forms: doc.querySelectorAll('form').length,
       tooLarge: isTooLarge(doc),
-      textStart: String(doc.body?.innerText || doc.documentElement?.textContent || '')
+      loading: isLoadingPage(doc),
+      empty: isEmptyResult(doc),
+      textStart: String(doc.body?.innerText || doc.body?.textContent || '')
         .replace(/\s+/g, ' ')
         .trim()
-        .slice(0, 250),
+        .slice(0, 300),
     };
   }
 
-  async function fetchDocument(url, options = {}) {
-    const response = await fetch(url, {
-      credentials: 'same-origin',
-      cache: 'no-store',
-      redirect: 'follow',
-      ...options,
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} ${response.statusText}: ${url}`);
-    }
-
-    const html = await response.text();
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-    return { doc, url: response.url || url };
-  }
-
-  async function resolveResultDocument(doc, baseUrl, depth = 0, seen = new Set()) {
-    if (findInventoryTable(doc) || isTooLarge(doc)) {
-      return { doc, url: baseUrl };
-    }
-
-    if (depth >= CONFIG.maxFrameDepth) {
-      return { doc, url: baseUrl };
-    }
-
-    // Some old applications return a frameset and put the actual results into a frame.
-    const frames = Array.from(doc.querySelectorAll('frame[src], iframe[src]'));
-    for (const frame of frames) {
-      let frameUrl;
-      try {
-        frameUrl = new URL(frame.getAttribute('src'), baseUrl).toString();
-      } catch (_) {
-        continue;
-      }
-
-      if (seen.has(frameUrl)) continue;
-      seen.add(frameUrl);
-
-      try {
-        const parsed = new URL(frameUrl);
-        if (parsed.origin !== location.origin) continue;
-
-        const fetched = await fetchDocument(frameUrl);
-        if (CONFIG.debug) console.log('[auto-export] frame response', describeDocument(fetched.doc, fetched.url));
-
-        const resolved = await resolveResultDocument(fetched.doc, fetched.url, depth + 1, seen);
-        if (findInventoryTable(resolved.doc) || isTooLarge(resolved.doc)) return resolved;
-      } catch (error) {
-        if (CONFIG.debug) console.warn('[auto-export] could not follow frame', frameUrl, error);
-      }
-    }
-
-    // Also handle simple meta-refresh intermediate pages.
-    const refresh = doc.querySelector('meta[http-equiv="refresh" i]');
-    if (refresh) {
-      const content = refresh.getAttribute('content') || '';
-      const match = content.match(/url\s*=\s*(.+)$/i);
-      if (match) {
-        try {
-          const refreshUrl = new URL(match[1].replace(/^['"]|['"]$/g, '').trim(), baseUrl).toString();
-          if (!seen.has(refreshUrl) && new URL(refreshUrl).origin === location.origin) {
-            seen.add(refreshUrl);
-            const fetched = await fetchDocument(refreshUrl);
-            if (CONFIG.debug) console.log('[auto-export] meta-refresh response', describeDocument(fetched.doc, fetched.url));
-            return resolveResultDocument(fetched.doc, fetched.url, depth + 1, seen);
-          }
-        } catch (_) {
-          // Ignore malformed refresh targets.
-        }
-      }
-    }
-
-    return { doc, url: baseUrl };
-  }
-
-  function extractRows(doc) {
-    const table = findInventoryTable(doc);
-    if (!table) return [];
-
+  function extractRowsFromTable(table) {
     const personIndex = findColumnIndex(table, ['odpovedna osoba']);
     const inventoryIndex = findColumnIndex(table, ['evidencni cislo', 'inventarni cislo']);
     const nameIndex = findColumnIndex(table, ['nazev']);
     const locationIndex = findColumnIndex(table, ['umisteni', 'mistnost', 'lokalita']);
 
-    // Fallbacks match the current FIS table layout from the working manual exporter.
+    // Current FIS layout from the working manual exporter:
+    // Akce=0, Poř.č.=1, Odpovědná osoba=2, Evidenční číslo=3,
+    // Název=4, Umístění=5.
     const idxPerson = personIndex >= 0 ? personIndex : 2;
     const idxInventory = inventoryIndex >= 0 ? inventoryIndex : 3;
     const idxName = nameIndex >= 0 ? nameIndex : 4;
@@ -279,50 +256,162 @@
     return rows;
   }
 
-  async function fetchFilteredDocument(form, sourceDoc, roomValue) {
-    const method = (form.method || 'GET').toUpperCase();
-    const sourceUrl = sourceDoc.location?.href || location.href;
-    const action = new URL(form.action || sourceUrl, sourceUrl);
-    const formData = cloneFormData(form, roomValue);
+  function inspectLiveFrame(iframe) {
+    let rootDoc;
+    try {
+      rootDoc = iframe.contentDocument || iframe.contentWindow?.document;
+    } catch (_) {
+      return { state: 'waiting', rows: [], doc: null };
+    }
 
-    const options = {
-      method,
-      credentials: 'same-origin',
-      cache: 'no-store',
-      redirect: 'follow',
+    if (!rootDoc) return { state: 'waiting', rows: [], doc: null };
+
+    const docs = allSameOriginDocuments(rootDoc);
+
+    for (const doc of docs) {
+      if (isTooLarge(doc)) return { state: 'too-large', rows: [], doc };
+    }
+
+    for (const doc of docs) {
+      const table = findInventoryTable(doc);
+      if (!table) continue;
+      const rows = extractRowsFromTable(table);
+      return { state: 'table', rows, doc };
+    }
+
+    for (const doc of docs) {
+      if (isEmptyResult(doc)) return { state: 'empty', rows: [], doc };
+    }
+
+    return {
+      state: docs.some(isLoadingPage) ? 'loading' : 'waiting',
+      rows: [],
+      doc: rootDoc,
     };
+  }
 
-    let url = action;
+  function createWorkerIframe() {
+    const old = document.getElementById('inventory-auto-export-worker');
+    if (old) old.remove();
+
+    const iframe = document.createElement('iframe');
+    iframe.id = 'inventory-auto-export-worker';
+    iframe.name = 'inventory-auto-export-worker';
+
+    // Do not use display:none: some old pages behave differently without layout.
+    iframe.style.cssText = [
+      'position:fixed',
+      'left:-10000px',
+      'top:0',
+      'width:1400px',
+      'height:900px',
+      'opacity:0.01',
+      'pointer-events:none',
+      'border:0',
+      'z-index:-1',
+    ].join(';');
+
+    document.body.appendChild(iframe);
+    return iframe;
+  }
+
+  async function navigateWorkerGet(iframe, url, roomValue, statusLine) {
+    if (CONFIG.debug) console.log(`[auto-export] navigating ${roomValue}`, url);
+
+    // about:blank first prevents us from reading stale results from the previous query.
+    iframe.src = 'about:blank';
+    await sleep(50);
+    iframe.src = url;
+
+    const started = Date.now();
+    let lastDebugAt = 0;
+
+    while (Date.now() - started < CONFIG.queryTimeoutMs) {
+      const result = inspectLiveFrame(iframe);
+
+      if (result.state === 'too-large' || result.state === 'table' || result.state === 'empty') {
+        if (CONFIG.debug && result.doc) {
+          console.log(`[auto-export] completed ${roomValue}: ${result.state}`, describeDocument(result.doc));
+        }
+        return result;
+      }
+
+      const elapsed = Math.round((Date.now() - started) / 1000);
+      statusLine.textContent = `Hledám: ${roomValue} • čekám ${elapsed} s`;
+
+      if (CONFIG.debug && Date.now() - lastDebugAt > 10000) {
+        lastDebugAt = Date.now();
+        try {
+          const doc = iframe.contentDocument || iframe.contentWindow?.document;
+          if (doc) console.log(`[auto-export] waiting ${roomValue}`, describeDocument(doc));
+        } catch (_) {
+          // Ignore transient navigation state.
+        }
+      }
+
+      await sleep(CONFIG.pollMs);
+    }
+
+    let diagnostic = '';
+    try {
+      const doc = iframe.contentDocument || iframe.contentWindow?.document;
+      if (doc) diagnostic = JSON.stringify(describeDocument(doc));
+    } catch (_) {}
+
+    throw new Error(`Timeout while waiting for FIS result for ${roomValue}. ${diagnostic}`);
+  }
+
+  function submitWorkerPost(iframe, form, sourceDoc, roomValue) {
+    const data = buildFormData(form, roomValue);
+    const base = sourceDoc.location?.href || location.href;
+    const action = new URL(form.action || base, base).toString();
+
+    const temp = document.createElement('form');
+    temp.method = 'POST';
+    temp.action = action;
+    temp.target = iframe.name;
+    temp.style.display = 'none';
+
+    for (const [key, value] of data.entries()) {
+      if (typeof value !== 'string') continue;
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = key;
+      input.value = value;
+      temp.appendChild(input);
+    }
+
+    document.body.appendChild(temp);
+    temp.submit();
+    temp.remove();
+  }
+
+  async function runQuery(iframe, form, sourceDoc, roomValue, statusLine) {
+    const method = (form.method || 'GET').toUpperCase();
 
     if (method === 'GET') {
-      const params = formDataToSearchParams(formData);
-      for (const [key, value] of params.entries()) url.searchParams.append(key, value);
-    } else {
-      const enctype = (form.enctype || '').toLowerCase();
-      if (enctype.includes('multipart/form-data')) {
-        options.body = formData;
-      } else {
-        options.body = formDataToSearchParams(formData);
-        options.headers = {
-          'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-        };
+      const built = buildGetUrl(form, sourceDoc, roomValue);
+      if (CONFIG.debug) {
+        console.log('[auto-export] query fields', roomValue, Array.from(built.data.entries()));
       }
+      return navigateWorkerGet(iframe, built.url, roomValue, statusLine);
     }
 
-    const fetched = await fetchDocument(url.toString(), options);
+    // POST fallback. Current FIS page appears to use GET, but keep this generic.
+    iframe.src = 'about:blank';
+    await sleep(50);
+    submitWorkerPost(iframe, form, sourceDoc, roomValue);
 
-    if (CONFIG.debug) {
-      console.log(`[auto-export] response for ${roomValue}`, describeDocument(fetched.doc, fetched.url));
-      console.log('[auto-export] submitted form', {
-        method,
-        action: action.toString(),
-        roomField: CONFIG.roomFieldName,
-        roomValue,
-        fields: Array.from(formData.entries()).map(([key, value]) => [key, typeof value === 'string' ? value : '[file]']),
-      });
+    const started = Date.now();
+    while (Date.now() - started < CONFIG.queryTimeoutMs) {
+      const result = inspectLiveFrame(iframe);
+      if (result.state === 'too-large' || result.state === 'table' || result.state === 'empty') return result;
+      const elapsed = Math.round((Date.now() - started) / 1000);
+      statusLine.textContent = `Hledám: ${roomValue} • čekám ${elapsed} s`;
+      await sleep(CONFIG.pollMs);
     }
 
-    return resolveResultDocument(fetched.doc, fetched.url);
+    throw new Error(`Timeout while waiting for POST result for ${roomValue}.`);
   }
 
   function downloadCsv(rows) {
@@ -330,14 +419,12 @@
     const data = [[building, `Místnost: více místností objektu ${building}`, '', '']];
 
     const sorted = Array.from(rows.values()).sort((a, b) => {
-      const roomCompare = a.room.localeCompare(b.room, 'cs', { numeric: true });
-      if (roomCompare !== 0) return roomCompare;
+      const byRoom = a.room.localeCompare(b.room, 'cs', { numeric: true });
+      if (byRoom !== 0) return byRoom;
       return a.inventory.localeCompare(b.inventory, 'cs', { numeric: true });
     });
 
-    for (const row of sorted) {
-      data.push([row.inventory, row.owner, row.name, row.room]);
-    }
+    for (const row of sorted) data.push([row.inventory, row.owner, row.name, row.room]);
 
     const csv = data.map(row => row.map(csvCell).join(';')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -348,7 +435,7 @@
     document.body.appendChild(link);
     link.click();
     link.remove();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   function createStatusBox() {
@@ -362,7 +449,7 @@
       'right:16px',
       'bottom:16px',
       'z-index:2147483647',
-      'width:390px',
+      'width:420px',
       'max-width:calc(100vw - 32px)',
       'padding:14px',
       'background:#1f2327',
@@ -390,13 +477,13 @@
   const sourceDoc = findWorkingDocument();
   const roomControl = sourceDoc.querySelector(`[name="${CONFIG.roomFieldName}"]`);
   if (!roomControl) {
-    console.error(`Field ${CONFIG.roomFieldName} was not found.`);
+    console.error(`[auto-export] field ${CONFIG.roomFieldName} was not found.`);
     return;
   }
 
   const form = roomControl.closest('form');
   if (!form) {
-    console.error('The room filter is not inside a form.');
+    console.error('[auto-export] room filter is not inside a form.');
     return;
   }
 
@@ -406,7 +493,6 @@
       roomFieldValue: roomControl.value || '',
       formMethod: form.method || 'GET',
       formAction: form.action || '',
-      formEnctype: form.enctype || '',
       formTarget: form.target || '',
     });
   }
@@ -415,11 +501,13 @@
   const statusLine = statusBox.querySelector('#inventory-auto-export-line');
   const statsLine = statusBox.querySelector('#inventory-auto-export-stats');
   const cancelButton = statusBox.querySelector('#inventory-auto-export-cancel');
+  const worker = createWorkerIframe();
 
   let cancelled = false;
   cancelButton.addEventListener('click', () => {
     cancelled = true;
-    statusLine.textContent = 'Ruším po dokončení právě běžícího požadavku…';
+    try { worker.src = 'about:blank'; } catch (_) {}
+    statusLine.textContent = 'Export se ruší…';
   });
 
   const queue = [{ prefix: CONFIG.buildingPrefix, depth: 0 }];
@@ -443,11 +531,10 @@
       statusLine.textContent = `Hledám: ${job.prefix}`;
       statsLine.textContent = `Požadavky: ${requests} • fronta: ${queue.length} • místnosti: ${rooms.size} • položky: ${rows.size}`;
 
-      const result = await fetchFilteredDocument(form, sourceDoc, job.prefix);
-      const resultDoc = result.doc;
+      const result = await runQuery(worker, form, sourceDoc, job.prefix, statusLine);
       requests += 1;
 
-      if (isTooLarge(resultDoc)) {
+      if (result.state === 'too-large') {
         oversized += 1;
 
         if (job.depth >= CONFIG.maxDepth) {
@@ -457,21 +544,16 @@
         for (const char of CONFIG.splitChars) {
           queue.push({ prefix: job.prefix + char, depth: job.depth + 1 });
         }
-      } else {
-        const found = extractRows(resultDoc);
-        if (!found.length) {
-          empty += 1;
-          if (CONFIG.debug) {
-            console.warn(`[auto-export] no rows for ${job.prefix}`, describeDocument(resultDoc, result.url));
-          }
-        }
+      } else if (result.state === 'empty') {
+        empty += 1;
+      } else if (result.state === 'table') {
+        if (!result.rows.length) empty += 1;
 
-        for (const row of found) {
+        for (const row of result.rows) {
           rooms.add(row.room);
-
           const existing = rows.get(row.inventory);
           if (existing && existing.room !== row.room) {
-            console.warn('Inventory appears in multiple locations:', row.inventory, existing.room, row.room);
+            console.warn('[auto-export] inventory in multiple locations', row.inventory, existing.room, row.room);
           }
           rows.set(row.inventory, row);
         }
@@ -487,16 +569,16 @@
     }
 
     if (!rows.size) {
-      throw new Error('No inventory rows were found. Open the console and send the [auto-export] source/response logs; they now show the actual FIS form action, fields, frames and returned page structure.');
+      throw new Error('No inventory rows were found. Send the latest [auto-export] waiting/completed logs from the console.');
     }
 
     statusLine.textContent = 'Hotovo – vytvářím CSV…';
-    statsLine.textContent = `Požadavky: ${requests} • rozdělení kvůli limitu: ${oversized} • prázdné dotazy: ${empty} • místnosti: ${rooms.size} • položky: ${rows.size}`;
+    statsLine.textContent = `Požadavky: ${requests} • rozdělení: ${oversized} • prázdné: ${empty} • místnosti: ${rooms.size} • položky: ${rows.size}`;
 
     downloadCsv(rows);
     statusLine.textContent = `Hotovo. Staženo ${rows.size} položek z ${rooms.size} místností.`;
 
-    console.log('Automatic inventory export finished.', {
+    console.log('[auto-export] finished', {
       requests,
       oversized,
       empty,
@@ -504,7 +586,10 @@
       rows: rows.size,
     });
   } catch (error) {
-    console.error('Automatic inventory export failed:', error);
-    statusLine.textContent = 'Chyba: ' + (error && error.message ? error.message : String(error));
+    console.error('[auto-export] failed', error);
+    statusLine.textContent = 'Chyba: ' + (error?.message || String(error));
+  } finally {
+    // Keep the worker only while debugging a failure; remove it on successful/cancelled run.
+    if (!CONFIG.debug || rows.size || cancelled) worker.remove();
   }
 })();
