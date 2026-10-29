@@ -2,24 +2,6 @@
 
 Nástroj pro převod inventárních dat z IMIS do přehledných CSV souborů podle místností / odpovědných osob a jejich následné zobrazování jako QR kódů.
 
-Celý běžný postup je:
-
-```text
-IMIS
-  ↓
-js_auto.txt / js.txt
-  ↓
-CSV export
-  ↓
-parser.py
-  ↓
-out/
-  ↓
-run.py
-  ↓
-QR kódy místností a jednotlivých inventárních položek
-```
-
 > [!IMPORTANT]
 > Aplikaci i parser je nejlepší spouštět z kořenové složky repozitáře, tedy ze složky, ve které jsou `parser.py`, `run.py` a `requirements.txt`.
 
@@ -473,4 +455,4 @@ python -m unittest discover -s tests -v
 
 ## Licence
 
-MIT – viz `LICENSE`.
+Projekt je dostupný pod licencí [MIT](LICENSE).
