@@ -162,9 +162,8 @@ class InventoryApp:
         self._qr_photo: ImageTk.PhotoImage | None = None
         self._last_qr_size = 0
 
-        self._room_qr_icon_photo: ImageTk.PhotoImage | None = None
-        self._room_qr_window: tk.Toplevel | None = None
-        self._room_qr_window_photo: ImageTk.PhotoImage | None = None
+        self._room_qr_overlay: tk.Frame | None = None
+        self._room_qr_overlay_photo: ImageTk.PhotoImage | None = None
 
         self._configure_styles()
         self.file_selection_view()
@@ -194,7 +193,7 @@ class InventoryApp:
             font=("TkDefaultFont", 16, "bold"),
         )
         style.configure("TButton", padding=(10, 7))
-        style.configure("QrIcon.TButton", padding=2)
+        style.configure("RoomQr.TButton", padding=(8, 4))
         style.configure("TCheckbutton", background=BACKGROUND, foreground=FOREGROUND)
         style.map("TCheckbutton", background=[("active", BACKGROUND)])
 
@@ -214,7 +213,7 @@ class InventoryApp:
             self.root.unbind(sequence)
 
     def clear_view(self) -> None:
-        self._close_room_qr_window(refocus=False)
+        self._close_room_qr_overlay(restore_shortcuts=False, refocus=False)
         self._clear_shortcuts()
 
         if self._resize_after_id is not None:
@@ -232,16 +231,12 @@ class InventoryApp:
             self._search_trace = None
 
         self._qr_photo = None
-        self._room_qr_icon_photo = None
 
         for widget in self.root.winfo_children():
             widget.destroy()
 
     def _toggle_topmost(self) -> None:
-        topmost = bool(self.topmost_var.get())
-        self.root.attributes("-topmost", topmost)
-        if self._room_qr_window is not None and self._room_qr_window.winfo_exists():
-            self._room_qr_window.attributes("-topmost", topmost)
+        self.root.attributes("-topmost", bool(self.topmost_var.get()))
 
     def _add_header(
         self,
@@ -263,19 +258,13 @@ class InventoryApp:
 
         header_rows = 2
         if room_qr_command is not None and subtitle:
-            icon_image = generate_qr_image(remove_accents(subtitle))
-            resampling = getattr(Image, "Resampling", Image).NEAREST
-            icon_image = icon_image.resize((30, 30), resampling)
-            self._room_qr_icon_photo = ImageTk.PhotoImage(icon_image)
-
-            room_button = ttk.Button(
+            ttk.Button(
                 header,
-                image=self._room_qr_icon_photo,
+                text="⌂  QR místnosti",
                 command=room_qr_command,
-                style="QrIcon.TButton",
+                style="RoomQr.TButton",
                 takefocus=False,
-            )
-            room_button.grid(row=2, column=0, sticky="w", pady=(6, 0))
+            ).grid(row=2, column=0, sticky="w", pady=(6, 0))
             header_rows = 3
 
         ttk.Checkbutton(
@@ -529,6 +518,14 @@ class InventoryApp:
             row=0, column=2, sticky="ew", padx=(5, 0)
         )
 
+        self._bind_qr_viewer_shortcuts()
+
+        main_frame.bind("<Configure>", self._update_detail_wrap)
+        self.qr_canvas.bind("<Configure>", self._schedule_qr_resize)
+
+        self.show_qr_code()
+
+    def _bind_qr_viewer_shortcuts(self) -> None:
         self.root.bind("<Right>", lambda _event: self.show_next())
         self.root.bind("<Left>", lambda _event: self.show_previous())
         self.root.bind("<Escape>", lambda _event: self.file_selection_view())
@@ -536,84 +533,92 @@ class InventoryApp:
         self.root.bind("<KeyPress-i>", lambda _event: self.toggle_room_qr())
         self.root.bind("<KeyPress-I>", lambda _event: self.toggle_room_qr())
 
-        main_frame.bind("<Configure>", self._update_detail_wrap)
-        self.qr_canvas.bind("<Configure>", self._schedule_qr_resize)
-
-        self.show_qr_code()
-
     def toggle_room_qr(self) -> str:
-        if self._room_qr_window is not None and self._room_qr_window.winfo_exists():
-            self._close_room_qr_window()
-            return "break"
+        if self._room_qr_overlay is not None:
+            try:
+                if self._room_qr_overlay.winfo_exists():
+                    return self._close_room_qr_overlay()
+            except tk.TclError:
+                self._room_qr_overlay = None
 
-        self._open_room_qr_window()
+        self._open_room_qr_overlay()
         return "break"
 
-    def _open_room_qr_window(self) -> None:
+    def _open_room_qr_overlay(self) -> None:
         if not getattr(self, "room_name", ""):
             return
 
-        room_code = remove_accents(self.room_name)
-        window = tk.Toplevel(self.root)
-        self._room_qr_window = window
+        self.root.update_idletasks()
 
-        window.title(f"Místnost {self.room_name} – QR")
-        window.configure(background=BACKGROUND)
-        window.resizable(False, False)
-        window.transient(self.root)
-        window.attributes("-topmost", bool(self.topmost_var.get()))
+        for sequence in ("<Left>", "<Right>"):
+            self.root.unbind(sequence)
+        self.root.bind("<Escape>", lambda _event: self._close_room_qr_overlay())
+        self.root.bind("<BackSpace>", lambda _event: self._close_room_qr_overlay())
+        self.root.bind("<KeyPress-i>", lambda _event: self._close_room_qr_overlay())
+        self.root.bind("<KeyPress-I>", lambda _event: self._close_room_qr_overlay())
 
-        frame = ttk.Frame(window, padding=18)
-        frame.grid(row=0, column=0, sticky="nsew")
+        overlay = tk.Frame(self.root, bg=BACKGROUND, highlightthickness=0, borderwidth=0)
+        self._room_qr_overlay = overlay
+        overlay.place(x=0, y=0, relwidth=1, relheight=1)
+        overlay.lift()
+        overlay.columnconfigure(0, weight=1)
+        overlay.rowconfigure(0, weight=1)
 
-        ttk.Label(frame, text="QR místnosti", style="Title.TLabel", anchor="center").grid(
+        content = ttk.Frame(overlay, padding=24)
+        content.grid(row=0, column=0)
+        content.columnconfigure(0, weight=1)
+
+        ttk.Label(content, text="QR místnosti", style="Title.TLabel", anchor="center").grid(
             row=0, column=0, sticky="ew", pady=(0, 4)
         )
-        ttk.Label(frame, text=self.room_name, style="Code.TLabel", anchor="center").grid(
-            row=1, column=0, sticky="ew", pady=(0, 12)
+        ttk.Label(content, text=self.room_name, style="Code.TLabel", anchor="center").grid(
+            row=1, column=0, sticky="ew", pady=(0, 14)
         )
 
+        max_size = min(self.root.winfo_width() - 80, self.root.winfo_height() - 220, 440)
+        qr_size = max(180, max_size)
+        room_code = remove_accents(self.room_name)
         qr_image = generate_qr_image(room_code)
         resampling = getattr(Image, "Resampling", Image).NEAREST
-        qr_image = qr_image.resize((360, 360), resampling)
-        self._room_qr_window_photo = ImageTk.PhotoImage(qr_image)
+        qr_image = qr_image.resize((qr_size, qr_size), resampling)
+        self._room_qr_overlay_photo = ImageTk.PhotoImage(qr_image)
 
-        qr_label = ttk.Label(frame, image=self._room_qr_window_photo)
-        qr_label.grid(row=2, column=0, padx=4, pady=(0, 12))
-
-        ttk.Button(frame, text="Zavřít", command=self._close_room_qr_window).grid(
-            row=3, column=0, sticky="ew"
+        ttk.Label(content, image=self._room_qr_overlay_photo).grid(
+            row=2, column=0, pady=(0, 14)
         )
 
-        window.protocol("WM_DELETE_WINDOW", self._close_room_qr_window)
-        window.bind("<Escape>", lambda _event: self._close_room_qr_window())
-        window.bind("<BackSpace>", lambda _event: self._close_room_qr_window())
-        window.bind("<KeyPress-i>", lambda _event: self._close_room_qr_window())
-        window.bind("<KeyPress-I>", lambda _event: self._close_room_qr_window())
+        total_items = max(0, len(self.evidence_entries) - 1)
+        ttk.Label(
+            content,
+            text=f"Inventarizace zůstává na pozici {self.index}/{total_items}",
+            style="Muted.TLabel",
+            anchor="center",
+        ).grid(row=3, column=0, sticky="ew", pady=(0, 10))
 
-        window.update_idletasks()
-        self._center_room_qr_window(window)
-        window.focus_force()
+        ttk.Button(content, text="Zavřít", command=self._close_room_qr_overlay).grid(
+            row=4, column=0, sticky="ew"
+        )
 
-    def _center_room_qr_window(self, window: tk.Toplevel) -> None:
-        self.root.update_idletasks()
-        window.update_idletasks()
+        overlay.focus_set()
 
-        x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - window.winfo_width()) // 2)
-        y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - window.winfo_height()) // 2)
-        window.geometry(f"+{x}+{y}")
+    def _close_room_qr_overlay(
+        self,
+        restore_shortcuts: bool = True,
+        refocus: bool = True,
+    ) -> str:
+        overlay = self._room_qr_overlay
+        self._room_qr_overlay = None
+        self._room_qr_overlay_photo = None
 
-    def _close_room_qr_window(self, refocus: bool = True) -> str:
-        window = self._room_qr_window
-        self._room_qr_window = None
-        self._room_qr_window_photo = None
-
-        if window is not None:
+        if overlay is not None:
             try:
-                if window.winfo_exists():
-                    window.destroy()
+                if overlay.winfo_exists():
+                    overlay.destroy()
             except tk.TclError:
                 pass
+
+        if restore_shortcuts and hasattr(self, "evidence_entries") and hasattr(self, "index"):
+            self._bind_qr_viewer_shortcuts()
 
         if refocus:
             try:
