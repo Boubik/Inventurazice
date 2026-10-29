@@ -260,7 +260,7 @@ class InventoryApp:
         if room_qr_command is not None and subtitle:
             ttk.Button(
                 header,
-                text="⌂  QR místnosti",
+                text="⌖  QR místnosti",
                 command=room_qr_command,
                 style="RoomQr.TButton",
                 takefocus=False,
