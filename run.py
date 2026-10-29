@@ -8,7 +8,7 @@ from pathlib import Path
 
 import qrcode
 import tkinter as tk
-from PIL import Image, ImageTk
+from PIL import Image, ImageDraw, ImageTk
 from tkinter import messagebox, ttk
 from tkinter import font as tkfont
 
@@ -140,6 +140,29 @@ def generate_qr_image(content: str) -> Image.Image:
     return qr.make_image(fill_color="black", back_color="white").convert("RGB")
 
 
+def generate_room_icon(size: int = 18) -> Image.Image:
+    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    stroke = max(1, size // 9)
+
+    left = 3
+    top = 2
+    right = size - 4
+    bottom = size - 2
+
+    draw.rectangle((left, top, right, bottom), outline="black", width=stroke)
+    draw.line((left + 3, top + 3, right - 2, top + 4), fill="black", width=stroke)
+    draw.line((right - 2, top + 4, right - 2, bottom - 2), fill="black", width=stroke)
+    handle_x = right - 4
+    handle_y = (top + bottom) // 2
+    radius = max(1, size // 18)
+    draw.ellipse(
+        (handle_x - radius, handle_y - radius, handle_x + radius, handle_y + radius),
+        fill="black",
+    )
+    return image
+
+
 class InventoryApp:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -164,6 +187,7 @@ class InventoryApp:
 
         self._room_qr_overlay: tk.Frame | None = None
         self._room_qr_overlay_photo: ImageTk.PhotoImage | None = None
+        self._room_button_icon_photo: ImageTk.PhotoImage | None = None
 
         self._configure_styles()
         self.file_selection_view()
@@ -193,7 +217,7 @@ class InventoryApp:
             font=("TkDefaultFont", 16, "bold"),
         )
         style.configure("TButton", padding=(10, 7))
-        style.configure("RoomQr.TButton", padding=(8, 4))
+        style.configure("RoomQr.TButton", padding=(7, 4))
         style.configure("TCheckbutton", background=BACKGROUND, foreground=FOREGROUND)
         style.map("TCheckbutton", background=[("active", BACKGROUND)])
 
@@ -231,6 +255,7 @@ class InventoryApp:
             self._search_trace = None
 
         self._qr_photo = None
+        self._room_button_icon_photo = None
 
         for widget in self.root.winfo_children():
             widget.destroy()
@@ -258,13 +283,16 @@ class InventoryApp:
 
         header_rows = 2
         if room_qr_command is not None and subtitle:
+            self._room_button_icon_photo = ImageTk.PhotoImage(generate_room_icon())
             ttk.Button(
                 header,
-                text="⌖  QR místnosti",
+                text="QR místnosti",
+                image=self._room_button_icon_photo,
+                compound="left",
                 command=room_qr_command,
                 style="RoomQr.TButton",
                 takefocus=False,
-            ).grid(row=2, column=0, sticky="w", pady=(6, 0))
+            ).grid(row=2, column=0, sticky="w", padx=(4, 0), pady=(6, 0))
             header_rows = 3
 
         ttk.Checkbutton(
