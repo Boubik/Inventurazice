@@ -1,51 +1,452 @@
-# Inventory QR Code Viewer
+# Inventarizace – QR
 
-Desktop utility for preparing inventory CSV exports and displaying QR codes for rooms and individual assets.
+Nástroj pro převod inventárních dat z IMIS do přehledných CSV souborů podle místností / odpovědných osob a jejich následné zobrazování jako QR kódů.
 
-## Components
+Celý běžný postup je:
 
-- `parser.py` – imports one or more CSV files and creates normalized outputs under `out/`.
-- `run.py` – scalable Tkinter QR viewer for the generated CSV files.
-- `js.txt` – browser snippet for exporting the currently displayed inventory table to CSV.
-
-## Parser
-
-The parser recognizes two distinct input types and **keeps their outputs separate**.
-
-### 1. Room exports
-
-Room exports have three columns and usually come from `js.txt`:
-
-```csv
-64/7.06;Místnost: 64/7.06;
-1003201/1;Owner;Projector
+```text
+IMIS
+  ↓
+js_auto.txt / js.txt
+  ↓
+CSV export
+  ↓
+parser.py
+  ↓
+out/
+  ↓
+run.py
+  ↓
+QR kódy místností a jednotlivých inventárních položek
 ```
 
-They are written to:
+> [!IMPORTANT]
+> Aplikaci i parser je nejlepší spouštět z kořenové složky repozitáře, tedy ze složky, ve které jsou `parser.py`, `run.py` a `requirements.txt`.
+
+## Obsah
+
+- [1. Instalace a závislosti](#1-instalace-a-závislosti)
+- [2. Export dat z IMIS](#2-export-dat-z-imis)
+  - [Doporučená varianta – `js_auto.txt`](#doporučená-varianta--js_autotxt)
+  - [Ruční varianta – `js.txt`](#ruční-varianta--jstxt)
+- [3. Kam uložit stažený CSV soubor](#3-kam-uložit-stažený-csv-soubor)
+- [4. Spuštění parseru](#4-spuštění-parseru)
+- [5. Co vznikne ve složce `out`](#5-co-vznikne-ve-složce-out)
+- [6. Spuštění QR aplikace](#6-spuštění-qr-aplikace)
+- [7. Ovládání aplikace a klávesové zkratky](#7-ovládání-aplikace-a-klávesové-zkratky)
+- [8. Kompletní příklad od exportu po QR](#8-kompletní-příklad-od-exportu-po-qr)
+- [9. MANKO export](#9-manko-export)
+- [10. Řešení častých problémů](#10-řešení-častých-problémů)
+
+---
+
+## 1. Instalace a závislosti
+
+### Požadavky
+
+- Python **3.8+**
+- `tkinter`
+- `qrcode`
+- `Pillow`
+
+Python balíčky `qrcode` a `Pillow` jsou uvedené v `requirements.txt`.
+
+### Stažení projektu
+
+```bash
+git clone https://github.com/Boubik/Inventurazice.git
+cd Inventurazice
+```
+
+### Doporučeně: virtuální prostředí
+
+Linux / macOS:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+Windows PowerShell:
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+py -m pip install -r requirements.txt
+```
+
+Pokud virtuální prostředí používat nechcete, stačí:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+### Tkinter
+
+`tkinter` se neinstaluje přes `requirements.txt`, protože jde o součást / systémový balíček Pythonu.
+
+Jeho dostupnost lze ověřit:
+
+```bash
+python -m tkinter
+```
+
+Pokud se otevře malé testovací okno, je vše v pořádku.
+
+Na Debianu / Ubuntu lze chybějící Tkinter obvykle doinstalovat:
+
+```bash
+sudo apt install python3-tk
+```
+
+> `parser.py` používá pouze standardní knihovnu Pythonu. `qrcode`, `Pillow` a `tkinter` jsou potřeba především pro grafickou aplikaci `run.py`.
+
+---
+
+## 2. Export dat z IMIS
+
+V repozitáři jsou dva JavaScriptové exportní skripty:
+
+| Soubor | Použití |
+|---|---|
+| `js_auto.txt` | **Doporučená varianta.** Automaticky projde místnosti daného objektu a vytvoří jeden souhrnný CSV export. |
+| `js.txt` | Ruční varianta. Exportuje data z právě zobrazené tabulky / místnosti v IMIS. |
+
+### Doporučená varianta – `js_auto.txt`
+
+`js_auto.txt` automaticky prochází místnosti objektu, načítá inventární položky a na konci stáhne jeden CSV soubor.
+
+Aktuálně je skript nastaven pro objekt:
+
+```javascript
+buildingPrefix: '64/'
+```
+
+Výchozí název exportu je:
+
+```text
+evidencni_cisla_auto_64.csv
+```
+
+Pokud chcete exportovat jiný objekt, změňte v `js_auto.txt` minimálně:
+
+```javascript
+buildingPrefix: '64/',
+outputFileName: 'evidencni_cisla_auto_64.csv',
+```
+
+na odpovídající hodnoty.
+
+### Jak `js_auto.txt` spustit
+
+1. Přihlaste se do **IMIS**.
+2. Otevřete stránku s inventářem, kde je dostupný filtr místnosti a tabulka inventárních položek.
+3. Otevřete vývojářské nástroje prohlížeče:
+   - Windows / Linux: `F12` nebo `Ctrl + Shift + I`
+   - macOS: `⌥ Option + ⌘ Command + I`
+4. Přepněte se na záložku **Console / Konzole**.
+5. Otevřete soubor `js_auto.txt` z tohoto repozitáře a zkopírujte **celý jeho obsah**.
+6. Vložte skript do konzole a potvrďte klávesou `Enter`.
+7. V pravém dolním rohu stránky se objeví panel **Automatický export místností**.
+8. Nechte export doběhnout. Skript postupně zobrazuje počet požadavků, nalezených místností a položek.
+9. Po dokončení prohlížeč automaticky stáhne CSV soubor, například:
+
+```text
+evidencni_cisla_auto_64.csv
+```
+
+Skript posílá dotazy postupně a mezi požadavky má prodlevu. Pokud IMIS vrátí limit `>9000`, skript příslušnou část automaticky rozdělí na menší dotazy.
+
+> [!NOTE]
+> Během automatického exportu nezavírejte záložku s IMIS. Export lze zrušit tlačítkem `Zrušit` v informačním panelu.
+
+### Ruční varianta – `js.txt`
+
+`js.txt` je vhodný, pokud chcete exportovat pouze konkrétní místnost nebo právě zobrazený výsledek.
+
+Postup:
+
+1. V IMIS nastavte požadovanou místnost / filtr.
+2. Nechte zobrazit tabulku inventárních položek.
+3. Otevřete `F12` → **Console / Konzole**.
+4. Zkopírujte celý obsah `js.txt`.
+5. Vložte ho do konzole a potvrďte `Enter`.
+6. Prohlížeč stáhne CSV soubor s názvem podobným:
+
+```text
+evidencni_cisla_64_7.06.csv
+```
+
+Skript se pokouší zjistit plné označení místnosti, například `64/7.06`, nikoliv pouze `7.06`.
+
+---
+
+## 3. Kam uložit stažený CSV soubor
+
+Nejjednodušší je vytvořit si v projektu lokální složku například `exports/`:
+
+```text
+Inventurazice/
+├── exports/
+│   └── evidencni_cisla_auto_64.csv
+├── js.txt
+├── js_auto.txt
+├── parser.py
+├── requirements.txt
+└── run.py
+```
+
+Potom stažený soubor z `Downloads / Stažené` zkopírujte do `exports/`.
+
+Parser umí zpracovat:
+
+- jeden konkrétní CSV soubor,
+- více CSV souborů,
+- celou složku rekurzivně,
+- nebo všechny CSV soubory pod aktuální složkou.
+
+> [!WARNING]
+> Exporty mohou obsahovat inventární údaje a jména odpovědných osob. Repozitář je veřejný, proto exportované CSV soubory **necommitujte na GitHub**.
+
+---
+
+## 4. Spuštění parseru
+
+Parser vezme exportované CSV soubory a vytvoří strukturu použitelnou QR aplikací.
+
+### Doporučený způsob
+
+Pokud jsou exporty ve složce `exports/`:
+
+```bash
+python parser.py ./exports
+```
+
+Na Windows lze podle instalace Pythonu použít také:
+
+```powershell
+py parser.py .\exports
+```
+
+### Jeden konkrétní soubor
+
+```bash
+python parser.py evidencni_cisla_auto_64.csv
+```
+
+nebo například:
+
+```bash
+python parser.py ./exports/evidencni_cisla_auto_64.csv
+```
+
+### Více souborů najednou
+
+```bash
+python parser.py MANKO.csv evidencni_cisla_64_7.06.csv
+```
+
+### Bez parametrů
+
+```bash
+python parser.py
+```
+
+V tomto režimu parser najde všechny CSV soubory v aktuální složce a jejích podsložkách. Složka s výstupem `out/` je automaticky ignorována.
+
+### Vlastní výstupní složka
+
+```bash
+python parser.py ./exports --output prepared
+```
+
+Výchozí výstupní složka je:
+
+```text
+out/
+```
+
+---
+
+## 5. Co vznikne ve složce `out`
+
+Po úspěšném zpracování běžného exportu vznikne například:
 
 ```text
 out/
 ├── rooms/
 │   └── 64/
-│       └── 7.06.csv
+│       ├── 7.06.csv
+│       ├── 7.07.csv
+│       └── 7.08.csv
 └── names/
-    └── Owner Name/
+    ├── Jan Novák/
+    │   └── 64/
+    │       └── 7.06.csv
+    └── Jana Nováková/
         └── 64/
-            └── 7.06.csv
+            └── 7.08.csv
 ```
 
-Duplicates are removed only within the room-export dataset. If the same room appears once as `7.06` and once as `64/7.06`, the fully qualified form is preferred.
+### `out/rooms/`
 
-### 2. MANKO export
+Data jsou rozdělena podle místností.
 
-The official MANKO CSV contains owner sections and a 7-column table. The important fields are:
+Typická cesta:
 
-- column 0 – inventory number
-- column 1 – item name
-- column 5 – full location such as `64/7.06`
-- rows beginning with `Odpovědná osoba:` / `Odpovědná ososba:` identify the owner
+```text
+out/rooms/64/7.06.csv
+```
 
-MANKO is always generated into its own namespace:
+### `out/names/`
+
+Stejná data jsou rozdělena podle odpovědné osoby a následně místnosti.
+
+Typická cesta:
+
+```text
+out/names/Jméno osoby/64/7.06.csv
+```
+
+Parser zároveň odstraňuje / slučuje duplicity uvnitř stejného typu exportu a preferuje plné označení místnosti, například `64/7.06` před samotným `7.06`.
+
+---
+
+## 6. Spuštění QR aplikace
+
+Nejdříve se ujistěte, že jste v kořenové složce projektu:
+
+```bash
+cd Inventurazice
+```
+
+Potom spusťte:
+
+```bash
+python run.py
+```
+
+nebo na Windows například:
+
+```powershell
+py run.py
+```
+
+Aplikace začne procházení souborů v adresáři, **ze kterého byla spuštěna**. Proto je doporučeno spouštět ji přímo z kořene repozitáře.
+
+Po spuštění typicky otevřete:
+
+```text
+out → rooms → 64 → 7.06.csv
+```
+
+Případně lze inventář procházet podle odpovědné osoby:
+
+```text
+out → names → Jméno osoby → 64 → 7.06.csv
+```
+
+Po otevření CSV se zobrazí QR kódy:
+
+1. první QR kód reprezentuje **místnost**,
+2. další QR kódy reprezentují jednotlivá **inventární / evidenční čísla**,
+3. pod QR kódem se zobrazuje odpovědná osoba a název položky.
+
+Velikost QR kódu se automaticky přizpůsobuje velikosti okna.
+
+Volba **Vždy navrchu** udrží okno aplikace nad ostatními programy.
+
+---
+
+## 7. Ovládání aplikace a klávesové zkratky
+
+### Výběr souboru / místnosti
+
+| Akce | Ovládání |
+|---|---|
+| Pohyb v seznamu | `↑` / `↓` |
+| Otevřít složku nebo CSV | `Enter` |
+| Otevřít myší | dvojklik |
+| O úroveň výš | `Esc` |
+| Hledání | začněte rovnou psát |
+| Smazat poslední znak hledání | `Backspace` |
+| Vymazat hledání | tlačítko `Vymazat` |
+| Znovu načíst obsah složky | tlačítko `Obnovit` |
+
+Při psaní není nutné nejdříve klikat do vyhledávacího pole. Pokud je aktivní seznam, běžné psaní se automaticky používá jako hledání.
+
+### Zobrazení QR kódu
+
+| Akce | Klávesa |
+|---|---|
+| Další QR kód | `→` |
+| Předchozí QR kód | `←` |
+| Návrat do výběru souborů | `Esc` |
+
+Stejné akce jsou dostupné také přes tlačítka `Předchozí`, `Menu` a `Další`.
+
+---
+
+## 8. Kompletní příklad od exportu po QR
+
+Příklad pro automatický export objektu `64`:
+
+### 1. V IMIS
+
+Otevřete inventář → `F12` → `Console` → vložte obsah `js_auto.txt` → `Enter`.
+
+Po dokončení se například stáhne:
+
+```text
+evidencni_cisla_auto_64.csv
+```
+
+### 2. Přesuňte CSV do projektu
+
+```text
+Inventurazice/exports/evidencni_cisla_auto_64.csv
+```
+
+### 3. Spusťte parser
+
+```bash
+cd Inventurazice
+python parser.py ./exports
+```
+
+Výsledkem bude například:
+
+```text
+out/rooms/64/7.06.csv
+out/rooms/64/7.07.csv
+out/rooms/64/7.08.csv
+...
+```
+
+### 4. Spusťte aplikaci
+
+```bash
+python run.py
+```
+
+### 5. V aplikaci
+
+Otevřete například:
+
+```text
+out → rooms → 64 → 7.06.csv
+```
+
+Následně lze klávesami `←` a `→` procházet QR kód místnosti a jednotlivých inventárních položek.
+
+---
+
+## 9. MANKO export
+
+Parser podporuje také oficiální MANKO CSV export.
+
+MANKO používá jinou strukturu než exporty z `js.txt` / `js_auto.txt`, proto se ukládá odděleně:
 
 ```text
 out/
@@ -54,86 +455,105 @@ out/
     │   └── 64/
     │       └── 7.06.csv
     └── names/
-        └── Owner Name/
+        └── Jméno osoby/
             └── 64/
                 └── 7.06.csv
 ```
 
-MANKO records are **not merged or deduplicated with normal room exports**. The same inventory number may therefore exist once in `out/rooms/...` and separately in `out/manko/rooms/...`, which is intentional.
-
-### Usage
-
-Process explicit files:
+Spuštění například:
 
 ```bash
-python parser.py MANKO.csv evidencni_cisla_64_7.06.csv
+python parser.py MANKO.csv
 ```
 
-Process a directory recursively:
+Nebo společně s běžnými exporty:
+
+```bash
+python parser.py MANKO.csv ./exports
+```
+
+MANKO data se **neslučují** s běžnými exporty. Stejné inventární číslo tedy může existovat jednou v `out/rooms/...` a zároveň v `out/manko/rooms/...`.
+
+---
+
+## 10. Řešení častých problémů
+
+### `ModuleNotFoundError: No module named 'qrcode'`
+
+Nainstalujte Python závislosti:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+Pokud používáte virtuální prostředí, nejprve ho aktivujte.
+
+### `No module named tkinter`
+
+Ověřte:
+
+```bash
+python -m tkinter
+```
+
+Na Debianu / Ubuntu:
+
+```bash
+sudo apt install python3-tk
+```
+
+### Parser píše `No input CSV files found. Nothing to do.`
+
+Zkontrolujte, že cesta skutečně obsahuje `.csv` soubor, například:
 
 ```bash
 python parser.py ./exports
 ```
 
-With no input arguments, all CSV files below the current directory are scanned. The selected output directory is excluded automatically:
+### Aplikace nevidí `out/`
+
+Pravděpodobně byla spuštěna z jiné pracovní složky.
+
+Spusťte ji z kořene projektu:
 
 ```bash
-python parser.py
-```
-
-Choose another output directory:
-
-```bash
-python parser.py ./exports --output prepared
-```
-
-Each dataset is regenerated only when an input of that type is present. For example, running the parser only with room exports leaves an existing `out/manko/` untouched, and running it only with MANKO leaves the normal `out/rooms/` and `out/names/` untouched.
-
-## QR viewer
-
-Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-Run:
-
-```bash
+cd Inventurazice
 python run.py
 ```
 
-The application lets you browse folders and CSV files, search, and move through room/item QR codes using the buttons or the left/right arrow keys.
+### `js_auto.txt` nenajde žádná data
 
-### Window behavior
+Zkontrolujte zejména:
 
-The window is no longer forced to stay above other applications. Use the `Vždy navrchu` checkbox when you temporarily want always-on-top behavior.
+- že jste skript spustili na správné stránce IMIS,
+- že je dostupný filtr místnosti a inventární tabulka,
+- že `buildingPrefix` odpovídá objektu, který chcete exportovat,
+- chybové zprávy v `Console / Konzoli` prohlížeče.
 
-The layout and QR image resize with the window, and the minimum window size is smaller so the application can be used next to another program.
+### Automatický export skončil chybou
 
-## Browser export (`js.txt`)
+`js_auto.txt` zobrazuje stav přímo v pravém dolním rohu stránky a podrobnosti zapisuje také do konzole prohlížeče. Pokud export není kompletní, CSV se záměrně nevytvoří jako hotový výstup.
 
-The browser helper tries to export the full room ID, for example `64/7.06`, instead of only `7.06`. It first looks for a full location already rendered on the page and then falls back to common building/object form controls.
+---
 
-If the source page does not expose the building anywhere, JavaScript cannot infer it reliably. In that case it keeps the room value it can see and logs a warning in the browser console.
+## Soubory projektu
 
-The CSV writer also quotes values containing semicolons, quotes, or line breaks.
+| Soubor | Účel |
+|---|---|
+| `js_auto.txt` | Automatický export inventáře z IMIS pro celý objekt. |
+| `js.txt` | Export aktuálně zobrazené tabulky / místnosti z IMIS. |
+| `parser.py` | Zpracování CSV a vytvoření struktury `out/`. |
+| `run.py` | Tkinter aplikace pro procházení CSV a zobrazování QR kódů. |
+| `requirements.txt` | Python závislosti pro QR aplikaci. |
 
-## Tests
+## Testy
 
-Parser regression tests use only the Python standard library:
+Pokud jsou v pracovní kopii dostupné parser testy, lze je spustit:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-## Requirements
+## Licence
 
-- Python 3.8+
-- tkinter (normally bundled with Python)
-- qrcode
-- Pillow
-
-## License
-
-MIT – see `LICENSE`.
+MIT – viz `LICENSE`.
