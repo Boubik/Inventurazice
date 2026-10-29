@@ -82,26 +82,6 @@ Pokud virtuální prostředí používat nechcete, stačí:
 python -m pip install -r requirements.txt
 ```
 
-### Tkinter
-
-`tkinter` se neinstaluje přes `requirements.txt`, protože jde o součást / systémový balíček Pythonu.
-
-Jeho dostupnost lze ověřit:
-
-```bash
-python -m tkinter
-```
-
-Pokud se otevře malé testovací okno, je vše v pořádku.
-
-Na Debianu / Ubuntu lze chybějící Tkinter obvykle doinstalovat:
-
-```bash
-sudo apt install python3-tk
-```
-
-> `parser.py` používá pouze standardní knihovnu Pythonu. `qrcode`, `Pillow` a `tkinter` jsou potřeba především pro grafickou aplikaci `run.py`.
-
 ---
 
 ## 2. Export dat z IMIS
@@ -184,11 +164,11 @@ Skript se pokouší zjistit plné označení místnosti, například `64/7.06`, 
 
 ## 3. Kam uložit stažený CSV soubor
 
-Nejjednodušší je vytvořit si v projektu lokální složku například `exports/`:
+Stažené CSV soubory ukládejte do složky `inv/` v kořeni projektu:
 
 ```text
 Inventurazice/
-├── exports/
+├── inv/
 │   └── evidencni_cisla_auto_64.csv
 ├── js.txt
 ├── js_auto.txt
@@ -197,14 +177,9 @@ Inventurazice/
 └── run.py
 ```
 
-Potom stažený soubor z `Downloads / Stažené` zkopírujte do `exports/`.
+Potom stažený soubor z `Downloads / Stažené` zkopírujte do `inv/`.
 
-Parser umí zpracovat:
-
-- jeden konkrétní CSV soubor,
-- více CSV souborů,
-- celou složku rekurzivně,
-- nebo všechny CSV soubory pod aktuální složkou.
+Parser při spuštění automaticky prohledá CSV soubory v projektu a jeho podsložkách. Výstupní složku `out/` při hledání vstupních souborů ignoruje.
 
 > [!WARNING]
 > Exporty mohou obsahovat inventární údaje a jména odpovědných osob. Repozitář je veřejný, proto exportované CSV soubory **necommitujte na GitHub**.
@@ -215,57 +190,19 @@ Parser umí zpracovat:
 
 Parser vezme exportované CSV soubory a vytvoří strukturu použitelnou QR aplikací.
 
-### Doporučený způsob
-
-Pokud jsou exporty ve složce `exports/`:
-
-```bash
-python parser.py ./exports
-```
-
-Na Windows lze podle instalace Pythonu použít také:
-
-```powershell
-py parser.py .\exports
-```
-
-### Jeden konkrétní soubor
-
-```bash
-python parser.py evidencni_cisla_auto_64.csv
-```
-
-nebo například:
-
-```bash
-python parser.py ./exports/evidencni_cisla_auto_64.csv
-```
-
-### Více souborů najednou
-
-```bash
-python parser.py MANKO.csv evidencni_cisla_64_7.06.csv
-```
-
-### Bez parametrů
+Z kořenové složky projektu spusťte:
 
 ```bash
 python parser.py
 ```
 
-V tomto režimu parser najde všechny CSV soubory v aktuální složce a jejích podsložkách. Složka s výstupem `out/` je automaticky ignorována.
+Parser automaticky:
 
-### Vlastní výstupní složka
-
-```bash
-python parser.py ./exports --output prepared
-```
-
-Výchozí výstupní složka je:
-
-```text
-out/
-```
+- projde aktuální složku a její podsložky,
+- najde CSV soubory,
+- rozpozná podporované exporty,
+- vytvoří výslednou strukturu do `out/`,
+- při hledání vstupů ignoruje samotné `out/`.
 
 ---
 
@@ -325,12 +262,6 @@ Potom spusťte:
 
 ```bash
 python run.py
-```
-
-nebo na Windows například:
-
-```powershell
-py run.py
 ```
 
 Aplikace začne procházení souborů v adresáři, **ze kterého byla spuštěna**. Proto je doporučeno spouštět ji přímo z kořene repozitáře.
@@ -405,14 +336,14 @@ evidencni_cisla_auto_64.csv
 ### 2. Přesuňte CSV do projektu
 
 ```text
-Inventurazice/exports/evidencni_cisla_auto_64.csv
+Inventurazice/inv/evidencni_cisla_auto_64.csv
 ```
 
 ### 3. Spusťte parser
 
 ```bash
 cd Inventurazice
-python parser.py ./exports
+python parser.py
 ```
 
 Výsledkem bude například:
@@ -460,16 +391,10 @@ out/
                 └── 7.06.csv
 ```
 
-Spuštění například:
+MANKO CSV stačí stejně jako ostatní exporty vložit do `inv/` a spustit:
 
 ```bash
-python parser.py MANKO.csv
-```
-
-Nebo společně s běžnými exporty:
-
-```bash
-python parser.py MANKO.csv ./exports
+python parser.py
 ```
 
 MANKO data se **neslučují** s běžnými exporty. Stejné inventární číslo tedy může existovat jednou v `out/rooms/...` a zároveň v `out/manko/rooms/...`.
@@ -488,26 +413,18 @@ python -m pip install -r requirements.txt
 
 Pokud používáte virtuální prostředí, nejprve ho aktivujte.
 
-### `No module named tkinter`
-
-Ověřte:
-
-```bash
-python -m tkinter
-```
-
-Na Debianu / Ubuntu:
-
-```bash
-sudo apt install python3-tk
-```
-
 ### Parser píše `No input CSV files found. Nothing to do.`
 
-Zkontrolujte, že cesta skutečně obsahuje `.csv` soubor, například:
+Zkontrolujte, že je CSV soubor uložený pod kořenovou složkou projektu, doporučeně v:
+
+```text
+inv/
+```
+
+Potom parser spusťte z kořene projektu:
 
 ```bash
-python parser.py ./exports
+python parser.py
 ```
 
 ### Aplikace nevidí `out/`
