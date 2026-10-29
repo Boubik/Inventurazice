@@ -266,7 +266,9 @@ Po otevření CSV se zobrazí QR kódy:
 2. další QR kódy reprezentují jednotlivá **inventární / evidenční čísla**,
 3. pod QR kódem se zobrazuje odpovědná osoba a název položky.
 
-Velikost QR kódu se automaticky přizpůsobuje velikosti okna.
+Pod názvem místnosti je také malá ikona QR. Kliknutím na ni nebo klávesou `I` lze kdykoliv během procházení zobrazit QR kód místnosti v samostatném okně. Aktuální pozice v inventarizaci se tím nemění, takže po zavření pokračujete na stejném `x/y`.
+
+Velikost hlavního QR kódu se automaticky přizpůsobuje velikosti okna.
 
 Volba **Vždy navrchu** udrží okno aplikace nad ostatními programy.
 
@@ -282,6 +284,7 @@ Volba **Vždy navrchu** udrží okno aplikace nad ostatními programy.
 | Otevřít složku nebo CSV | `Enter` |
 | Otevřít myší | dvojklik |
 | O úroveň výš | `Esc` |
+| O úroveň výš při prázdném hledání | `Backspace` |
 | Hledání | začněte rovnou psát |
 | Smazat poslední znak hledání | `Backspace` |
 | Vymazat hledání | tlačítko `Vymazat` |
@@ -295,9 +298,14 @@ Při psaní není nutné nejdříve klikat do vyhledávacího pole. Pokud je akt
 |---|---|
 | Další QR kód | `→` |
 | Předchozí QR kód | `←` |
-| Návrat do výběru souborů | `Esc` |
+| Návrat do výběru souborů | `Esc` / `Backspace` |
+| Otevřít / zavřít QR místnosti | `I` |
 
-Stejné akce jsou dostupné také přes tlačítka `Předchozí`, `Menu` a `Další`.
+QR místnosti lze otevřít také kliknutím na malou QR ikonu pod názvem místnosti.
+
+Okno QR místnosti lze zavřít klávesou `I`, `Esc`, `Backspace`, tlačítkem `Zavřít` nebo klasickým zavřením okna. Po zavření zůstane hlavní inventarizace na stejné položce.
+
+Stejné akce pro procházení jsou dostupné také přes tlačítka `Předchozí`, `Menu` a `Další`.
 
 ---
 
